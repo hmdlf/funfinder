@@ -15,6 +15,7 @@
 
 import hashlib
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
@@ -41,7 +42,7 @@ STATUS_LABELS = {"cancelled": "Отменено", "postponed": "Перенесе
 SELECT_CITIES = "SELECT city_id, slug, name, timezone FROM meta.cities ORDER BY slug"
 SELECT_CATEGORIES = "SELECT slug, name_ru FROM meta.categories ORDER BY sort_order, slug"
 SELECT_EVENTS = """
-SELECT event_id, title, event_date, event_time, venue, price, category, status, source_urls
+SELECT event_id, title, event_date, event_time, venue, venue_address, price, category, status, source_urls
   FROM catalog.events_public
  WHERE city = %s
  ORDER BY event_date, event_time NULLS LAST, title
@@ -60,6 +61,7 @@ class Event:
     category_name: str
     status: str
     url: str
+    address: str | None = None  # из справочника площадок
 
     @property
     def status_label(self) -> str | None:
@@ -123,7 +125,12 @@ def json_ld(events: list[Event], *, city: str, tz: ZoneInfo) -> str:
             "location": {
                 "@type": "Place",
                 "name": e.venue or city,
-                "address": {"@type": "PostalAddress", "addressLocality": city, "addressCountry": "RU"},
+                "address": {
+                    "@type": "PostalAddress",
+                    **({"streetAddress": e.address} if e.address else {}),
+                    "addressLocality": city,
+                    "addressCountry": "RU",
+                },
             },
             "url": e.url,
         }
@@ -133,6 +140,11 @@ def json_ld(events: list[Event], *, city: str, tz: ZoneInfo) -> str:
     # название не могло закрыть тег или превратиться в разметку. JSON читает < как <.
     text = json.dumps(data, ensure_ascii=False)
     return text.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+
+
+def glue_abbreviations(address: str | None) -> str | None:
+    """«ул. Фрунзе» не разрывается на «ул.» в конце строки и «Фрунзе» в начале следующей."""
+    return re.sub(r"\b(ул|пл|пр|д|стр)\. ", "\\1.\u00a0", address) if address else address
 
 
 def _environment() -> Environment:
@@ -177,13 +189,14 @@ def load(conn) -> tuple[list[dict], dict[str, str], dict[str, list[Event]]]:
                     day=day,
                     at=at,
                     venue=venue,
+                    address=glue_abbreviations(address),
                     price=price,
                     category=category,
                     category_name=categories.get(category, category),
                     status=status,
                     url=urls[0],
                 )
-                for event_id, title, day, at, venue, price, category, status, urls in cur.fetchall()
+                for event_id, title, day, at, venue, address, price, category, status, urls in cur.fetchall()
             ]
     return cities, categories, events
 

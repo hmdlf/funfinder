@@ -16,6 +16,10 @@ city:
 #   recheck_days: 7             сколько последних дней перепроверять на правки
 #   max_pages: 10               максимум страниц по 100 постов за запуск
 #   wall_filter: owner          owner — только посты сообщества, all — и посты людей
+#
+# venue — площадка по умолчанию, slug из venues/lipetsk.yaml. Для пабликов
+# самих площадок: если модель не нашла место или написала «малый зал»,
+# событие привязывается к этой площадке.
 vk:
 #  - handle: example_public
 #    note: Афиша площадки X
@@ -25,12 +29,15 @@ vk:
 #      initial_lookback_days: 60
 - handle: club221125269
   note: Культ-клуб «Атмосфера» / Липецк
+  venue: atmosfera
 - handle: club51369142
   note: Афиша Липецк
 - handle: club154441145
   note: Галерея современного искусства «Буксир»
+  venue: buksir
 - handle: club216293636
   note: Прачечная | учреждение культуры | Липецк
+  venue: prachechnaya
 - handle: 185616166
   note: Библиотека | Липецк
 - handle: 217225844

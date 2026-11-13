@@ -67,6 +67,17 @@ def test_json_ld_marks_cancelled_and_cannot_close_script_tag():
     assert item["name"] == "</script><b>"  # для поисковика название не изменилось
     assert item["startDate"] == "2026-11-14T19:00:00+03:00"
     assert item["eventStatus"] == "https://schema.org/EventCancelled"
+    assert "streetAddress" not in item["location"]["address"]  # адреса нет — поля нет
+
+
+def test_glue_abbreviations():
+    assert build.glue_abbreviations("ул. Фрунзе, д. 1") == "ул.\u00a0Фрунзе, д.\u00a01"
+    assert build.glue_abbreviations(None) is None
+
+
+def test_json_ld_street_address_from_venue_directory():
+    item = json.loads(build.json_ld([event(1, date(2026, 11, 14), address="ул. Ленина, 25")], city="Липецк", tz=MSK))
+    assert item["@graph"][0]["location"]["address"]["streetAddress"] == "ул. Ленина, 25"
 
 
 # --- Сборка страниц ---
@@ -76,7 +87,14 @@ def test_json_ld_marks_cancelled_and_cannot_close_script_tag():
 def site(tmp_path):
     day = date(2026, 11, 14)
     events = [
-        event(1, day, time(19, 0), title="Концерт <script>alert(1)</script>", price="от 500 ₽"),
+        event(
+            1,
+            day,
+            time(19, 0),
+            title="Концерт <script>alert(1)</script>",
+            price="от 500 ₽",
+            address="пл. Театральная, 1",
+        ),
         event(2, day, None, category="theatre", status="cancelled", venue=None),
         event(3, day, time(20, 30), category="classes", title="Танго / Группа B"),
     ]
@@ -111,6 +129,7 @@ def test_city_page_content(site):
     assert "<script>alert" not in html  # и нигде не как тег, в том числе в JSON-LD
     assert "Отменено" in html and "Место уточняйте в анонсе" in html
     assert "Концерты, от 500 ₽" in html
+    assert 'Театр драмы<span class="event-address">, пл. Театральная, 1</span>' in html  # адрес из справочника
     assert "Танго" not in html  # регулярные занятия не забивают главную
     assert 'href="https://vk.me/matingu">vk.me/matingu</a>' in html
     assert re.search(r'<a href="/lipetsk/classes/">Занятия и кружки</a>', html)  # но в навигации есть

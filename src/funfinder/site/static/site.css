@@ -343,6 +343,11 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+/* Адрес из справочника площадок: тише названия. */
+.event-address {
+  color: var(--sage);
+}
+
 .event-meta {
   margin: 0.1rem 0 0;
   color: var(--sage);

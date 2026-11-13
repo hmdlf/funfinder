@@ -8,6 +8,10 @@
 
 Похожесть: время отличается не больше чем на TIME_TOLERANCE_MIN минут (или
 у одного из двух оно не указано) и похожее название после нормализации.
+Площадка из справочника (resolve_venues) уточняет решение: разные
+площадки — точно разные события; одна и та же — порог похожести названий
+ниже (SAME_VENUE_THRESHOLD), потому что совпадение даты, времени и места
+уже само по себе сильный признак.
 
 rebuild=True пересобирает каталог с нуля из staging.events — без вызовов LLM.
 Нужно после смены правил склейки: старые события каталога были склеены
@@ -23,6 +27,7 @@ from rapidfuzz import fuzz
 log = logging.getLogger(__name__)
 
 THRESHOLD = 80  # порог похожести названий, 0..100
+SAME_VENUE_THRESHOLD = 70  # то же, если площадка у обоих известна и совпадает
 TIME_TOLERANCE_MIN = 30  # Прачечная пишет 19:01, а перепосты округляют до 19:00
 STEM_LEN = 5  # грубая «основа» слова: «Султана Лагучева» и «Султан Лагучев» → «султа лагуч»
 
@@ -55,6 +60,27 @@ def times_compatible(a, b) -> bool:
     return abs((a.hour * 60 + a.minute) - (b.hour * 60 + b.minute)) <= TIME_TOLERANCE_MIN
 
 
+def required_score(venue_a: int | None, venue_b: int | None) -> float | None:
+    """Порог похожести названий для пары площадок. None — склеивать нельзя."""
+    if venue_a is None or venue_b is None:
+        return THRESHOLD  # у одного место неизвестно — решает название
+    if venue_a != venue_b:
+        return None  # «Новогодний концерт» в филармонии и в ДК — разные события
+    return SAME_VENUE_THRESHOLD
+
+
+def find_match(candidates: list[dict], tnorm: str, event_time, venue_id: int | None) -> tuple[dict | None, float]:
+    """Первое подходящее событие из кандидатов той же даты и похожесть названий."""
+    for c in candidates:
+        threshold = required_score(c["venue_id"], venue_id)
+        if threshold is None or not times_compatible(c["time"], event_time):
+            continue
+        score = title_score(c["title_norm"], tnorm)
+        if score >= threshold:
+            return c, score
+    return None, 0.0
+
+
 def _longest(values):
     return max((v for v in values if v), key=len, default=None)
 
@@ -68,7 +94,7 @@ def recompute_event(cur, event_id: int) -> None:
     """Пересчитывает поля события из всех его упоминаний."""
     cur.execute(
         """
-        SELECT title, event_time, venue, price, category, status
+        SELECT title, event_time, venue, price, category, status, venue_id
           FROM staging.events
          WHERE event_id = %s
          ORDER BY published_at, id
@@ -81,7 +107,7 @@ def recompute_event(cur, event_id: int) -> None:
         """
         UPDATE catalog.events
            SET title = %s, title_norm = %s, event_time = %s, venue = %s, price = %s,
-               category = %s, status = %s, updated_at = now()
+               category = %s, status = %s, venue_id = %s, updated_at = now()
          WHERE event_id = %s
         """,
         (
@@ -92,6 +118,7 @@ def recompute_event(cur, event_id: int) -> None:
             _longest(i[3] for i in items),
             _most_common((i[4] for i in items), skip="other"),  # «другое» — только если иначе никак
             items[-1][5],  # статус: из самого свежего поста
+            _most_common(i[6] for i in items),  # площадка: чаще всего называемая
             event_id,
         ),
     )
@@ -113,7 +140,7 @@ def run(conn, *, rebuild: bool = False) -> dict:
         # присоединяются к уже известным сеансам, а не становятся отдельными событиями.
         cur.execute(
             """
-            SELECT id, city_id, title, event_date, event_time, venue, price, category, status
+            SELECT id, city_id, title, event_date, event_time, venue, price, category, status, venue_id
               FROM staging.events
              WHERE validated AND quarantine_reason IS NULL AND event_id IS NULL
              ORDER BY event_time IS NULL, published_at, id
@@ -121,44 +148,46 @@ def run(conn, *, rebuild: bool = False) -> dict:
         )
         rows = cur.fetchall()
 
-        for row_id, city_id, title, event_date, event_time, venue, price, category, status in rows:
+        for row_id, city_id, title, event_date, event_time, venue, price, category, status, venue_id in rows:
             tnorm = norm_title(title)
             key = (city_id, event_date)
             if key not in candidates:
                 cur.execute(
                     """
-                    SELECT event_id, title_norm, event_time
+                    SELECT event_id, title_norm, event_time, venue_id
                       FROM catalog.events
                      WHERE city_id = %s AND event_date = %s
                     """,
                     key,
                 )
-                candidates[key] = [{"event_id": e, "title_norm": n, "time": t} for e, n, t in cur.fetchall()]
+                candidates[key] = [
+                    {"event_id": e, "title_norm": n, "time": t, "venue_id": v} for e, n, t, v in cur.fetchall()
+                ]
 
-            match = next(
-                (
-                    c
-                    for c in candidates[key]
-                    if times_compatible(c["time"], event_time) and title_score(c["title_norm"], tnorm) >= THRESHOLD
-                ),
-                None,
-            )
+            match, score = find_match(candidates[key], tnorm, event_time, venue_id)
             if match is None:
                 cur.execute(
                     """
                     INSERT INTO catalog.events
-                           (city_id, title, title_norm, event_date, event_time, venue, price, category, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           (city_id, title, title_norm, event_date, event_time, venue, price, category, status,
+                            venue_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING event_id
                     """,
-                    (city_id, title, tnorm, event_date, event_time, venue, price, category, status),
+                    (city_id, title, tnorm, event_date, event_time, venue, price, category, status, venue_id),
                 )
                 event_id = cur.fetchone()[0]
-                candidates[key].append({"event_id": event_id, "title_norm": tnorm, "time": event_time})
+                candidates[key].append(
+                    {"event_id": event_id, "title_norm": tnorm, "time": event_time, "venue_id": venue_id}
+                )
                 created += 1
             else:
                 event_id = match["event_id"]
+                if score < THRESHOLD:
+                    # Склеено только благодаря общей площадке — пишем в лог, чтобы такие решения было видно.
+                    log.info("Склеено по площадке (%.0f): %r ← %r", score, match["title_norm"], tnorm)
                 match["time"] = match["time"] or event_time  # чтобы другой сеанс в этом запуске не прилип
+                match["venue_id"] = match["venue_id"] or venue_id
                 linked += 1
 
             cur.execute("UPDATE staging.events SET event_id = %s WHERE id = %s", (event_id, row_id))

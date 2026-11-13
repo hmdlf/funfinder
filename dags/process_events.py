@@ -13,15 +13,23 @@
 2. **validate_quality** — проверяет новые строки `staging.events`: без
    названия, без даты, дата раньше публикации или больше чем на год вперёд →
    `quarantine_reason`. Категория не из `meta.categories` → `other`.
-3. **dedupe_events** — склеивает упоминания в `catalog.events`: тот же город
-   и дата, совместимое время, похожее название. Сравнивает и с событиями
-   прошлых запусков. Если каталог изменился, публикует Asset `catalog_events`.
+3. **resolve_venues** — привязывает текст места к площадке из справочника
+   `sources/venues/<город>.yaml` («ОЦКиНТ» и «Центр культуры, народного
+   творчества и кино» — одна площадка). У пабликов самих площадок
+   «малый зал» и пустое место → площадка паблика. Что не нашлось —
+   в `staging.unmatched_venues`.
+4. **dedupe_events** — склеивает упоминания в `catalog.events`: тот же город
+   и дата, совместимое время, похожее название. Разные площадки — разные
+   события, одна площадка — порог похожести названий ниже. Сравнивает и с
+   событиями прошлых запусков. Если каталог изменился, публикует Asset
+   `catalog_events`.
 
 Карантин — представление `quarantine.events`, витрина — `catalog.events_public`.
 
 **Параметры ручного запуска** (по Asset запускается с выключенными):
-- `rebuild_catalog` — пересобрать каталог из `staging.events` с нуля.
-  Бесплатно, без вызовов LLM. Нужно после смены правил склейки.
+- `rebuild_catalog` — заново привязать площадки и пересобрать каталог из
+  `staging.events` с нуля. Бесплатно, без вызовов LLM. Нужно после смены
+  правил склейки и после правки справочника площадок.
 - `reextract` — заново прогнать через LLM посты, обработанные старой
   версией промпта. Стоит денег. Каталог при этом пересобирается сам.
 """
@@ -36,7 +44,7 @@ from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
 from funfinder.assets import CATALOG_EVENTS, RAW_VK_POSTS
 from funfinder.db import connect
-from funfinder.events import dedupe, extract, validate
+from funfinder.events import dedupe, extract, validate, venues
 from funfinder.events.llm import LLMClient, LLMConfigError
 
 log = logging.getLogger(__name__)
@@ -68,7 +76,7 @@ def _connect():
             False,
             type="boolean",
             title="Пересобрать каталог",
-            description="Склеить все упоминания из staging заново. Бесплатно: LLM не вызывается.",
+            description="Заново привязать площадки и склеить все упоминания. Бесплатно: LLM не вызывается.",
         ),
         "reextract": Param(
             False,
@@ -106,6 +114,16 @@ def process_events():
         log.info("Итоги проверки: %s", stats)
         return stats
 
+    @task
+    def resolve_venues() -> dict:
+        params = get_current_context()["params"]
+        # После правки справочника старые упоминания тоже надо перепривязать — вместе с пересборкой.
+        full = params["rebuild_catalog"] or params["reextract"]
+        with closing(_connect()) as conn:
+            stats = venues.run(conn, full=full)
+        log.info("Итоги привязки площадок: %s", stats)
+        return stats
+
     @task(outlets=[CATALOG_EVENTS])
     def dedupe_events() -> dict:
         ctx = get_current_context()
@@ -119,7 +137,7 @@ def process_events():
         ctx["outlet_events"][CATALOG_EVENTS].extra = stats
         return stats
 
-    extract_events() >> validate_quality() >> dedupe_events()
+    extract_events() >> validate_quality() >> resolve_venues() >> dedupe_events()
 
 
 process_events()

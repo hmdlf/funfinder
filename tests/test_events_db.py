@@ -6,8 +6,9 @@
 import json
 
 from conftest import NOW, FakeVK, make_post
-from funfinder.events import dedupe, extract, validate
+from funfinder.events import dedupe, extract, validate, venues
 from funfinder.events.llm import LLMResult
+from funfinder.sources import VenueConfig, _sync_venues
 from funfinder.vk.ingest import IngestSettings, ingest_source
 
 SETTINGS = IngestSettings(page_size=50, initial_lookback_days=30, recheck_days=3)
@@ -58,7 +59,10 @@ def load(conn, source, posts, run_id="run_1"):
 
 
 def pipeline(conn, llm):
-    return extract.run(conn, llm, now=NOW), validate.run(conn), dedupe.run(conn)
+    """Как process_events: extract → validate → resolve_venues → dedupe."""
+    extracted, validated = extract.run(conn, llm, now=NOW), validate.run(conn)
+    venues.run(conn)
+    return extracted, validated, dedupe.run(conn)
 
 
 def catalog(conn):
@@ -330,3 +334,109 @@ def test_timeout_post_does_not_block_others_and_is_retried(conn, lipetsk):
     stats, _, _ = pipeline(conn, llm)
     assert stats == {"ok": 1, "events": 1, "tokens_in": 100, "tokens_out": 0, "posts": 1}
     assert len(catalog(conn)) == 2
+
+
+# --- Площадки ---
+
+
+def add_venues(conn, venue_list, *, default_for=None):
+    """Справочник площадок в базу; default_for — (источник, slug площадки по умолчанию)."""
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT city_id FROM meta.cities WHERE slug = 'lipetsk'")
+        ids = _sync_venues(cur, cur.fetchone()[0], tuple(venue_list))
+        if default_for:
+            source, slug = default_for
+            cur.execute("UPDATE meta.sources SET venue_id = %s WHERE source_id = %s", (ids[slug], source["source_id"]))
+    return ids
+
+
+ATMOSFERA = VenueConfig("atmosfera", "Культ-клуб «Атмосфера»", "ул. Фрунзе, 1", ("Атмосфера",))
+DACHA_VENUE = VenueConfig("dacha", "Гастробар «Дача»", "ул. Интернациональная, 6")
+FILARMONIYA = VenueConfig("filarmoniya", "Филармония", None, ("Унион",))
+
+
+def public(conn):
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT title, venue, venue_address FROM catalog.events_public ORDER BY title")
+        return cur.fetchall()
+
+
+def test_venue_resolution_and_source_default(conn, lipetsk):
+    add_venues(conn, [ATMOSFERA, DACHA_VENUE], default_for=(lipetsk, "atmosfera"))
+    load(
+        conn,
+        lipetsk,
+        [
+            make_post(1, days_ago=2, text="Танго"),
+            make_post(2, days_ago=1, text="Квиз"),
+            make_post(3, days_ago=1, text="Выезд"),
+        ],
+    )
+    llm = FakeLLM(
+        {
+            "Танго": [ev("Милонга", "2026-11-14", venue="малый зал", category="party")],  # без времени
+            "Квиз": [ev(QUIZ, "2026-11-13", "19:00", DACHA)],
+            "Выезд": [ev("Концерт в парке", "2026-11-15", "18:00", "парк Победы", "concert")],
+        }
+    )
+    extract.run(conn, llm, now=NOW)
+    validate.run(conn)
+    stats = venues.run(conn)
+    dedupe.run(conn)
+
+    # Площадка паблика подставляется для «малого зала», но не для чужого места.
+    assert stats == {"checked": 3, "matched": 1, "source_default": 1, "unmatched": 1, "no_venue": 0, "changed": 2}
+    assert public(conn) == [
+        ("Концерт в парке", "парк Победы", None),
+        ("Милонга", "Культ-клуб «Атмосфера»", "ул. Фрунзе, 1"),  # без времени, но место известно — в витрине
+        (QUIZ, "Гастробар «Дача»", "ул. Интернациональная, 6"),
+    ]
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT venue, mentions FROM staging.unmatched_venues")
+        assert cur.fetchall() == [("парк Победы", 1)]
+
+
+def test_different_venues_are_never_merged(conn, lipetsk):
+    add_venues(conn, [ATMOSFERA, FILARMONIYA])
+    load(conn, lipetsk, [make_post(1, days_ago=2, text="Первый"), make_post(2, days_ago=1, text="Второй")])
+    llm = FakeLLM(
+        {
+            "Первый": [ev("Новогодний концерт", "2026-11-14", "19:00", "филармония «Унион»", "concert")],
+            "Второй": [ev("Новогодний концерт", "2026-11-14", "19:00", "Атмосфера", "concert")],
+        }
+    )
+    _, _, stats = pipeline(conn, llm)
+    assert stats["created"] == 2  # одинаковые название и время, но площадки разные
+
+
+def test_same_venue_lowers_title_threshold(conn, lipetsk):
+    add_venues(conn, [ATMOSFERA])
+    load(conn, lipetsk, [make_post(1, days_ago=2, text="Анонс"), make_post(2, days_ago=1, text="Напоминание")])
+    first, second = "Стендап Ивана Абрамова", "Абрамов: большой стендап-концерт"
+    score = dedupe.title_score(dedupe.norm_title(first), dedupe.norm_title(second))
+    assert dedupe.SAME_VENUE_THRESHOLD <= score < dedupe.THRESHOLD
+    llm = FakeLLM(
+        {
+            "Анонс": [ev(first, "2026-11-14", "20:00", "Атмосфера", "concert")],
+            "Напоминание": [ev(second, "2026-11-14", "20:00", "Культ-клуб «Атмосфера»", "concert")],
+        }
+    )
+    _, _, stats = pipeline(conn, llm)
+    assert stats["created"] == 1 and stats["linked"] == 1  # без площадки названия не дотянули бы до порога
+    assert dedupe.required_score(None, 1) == dedupe.THRESHOLD
+
+
+def test_rebuild_rebinds_venues_after_directory_change(conn, lipetsk):
+    load(conn, lipetsk, [make_post(1, days_ago=1, text="Квиз")])
+    pipeline(conn, FakeLLM({"Квиз": [ev(QUIZ, "2026-11-13", "19:00", DACHA)]}))
+    assert public(conn) == [(QUIZ, DACHA, None)]  # справочника ещё нет
+
+    add_venues(conn, [DACHA_VENUE])
+    assert venues.run(conn)["checked"] == 0  # обычный запуск не трогает уже склеенное
+    assert venues.run(conn, full=True)["changed"] == 1
+    dedupe.run(conn, rebuild=True)
+    assert public(conn) == [(QUIZ, "Гастробар «Дача»", "ул. Интернациональная, 6")]
+
+    # Площадку убрали из справочника — событие остаётся, с исходным текстом места.
+    add_venues(conn, [ATMOSFERA])
+    assert public(conn) == [(QUIZ, DACHA, None)]

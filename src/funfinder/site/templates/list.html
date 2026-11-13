@@ -57,7 +57,7 @@
           <div class="event-body">
             <a class="event-title" href="{{ e.url }}" target="_blank" rel="noopener">{{ e.title }}</a>
             {% if e.status_label %}<span class="event-status">{{ e.status_label }}</span>{% endif %}
-            <p class="event-place">{{ e.venue or "Место уточняйте в анонсе" }}</p>
+            <p class="event-place">{{ e.venue or "Место уточняйте в анонсе" }}{% if e.address %}<span class="event-address">, {{ e.address }}</span>{% endif %}</p>
             {% if not current or e.price %}
             <p class="event-meta">
               {%- if not current %}{{ e.category_name }}{% endif -%}

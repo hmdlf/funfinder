@@ -38,9 +38,10 @@ def test_ingest_vk_structure(dagbag):
 
 def test_process_events_structure(dagbag):
     dag = dagbag.dags["process_events"]
-    assert set(dag.task_ids) == {"extract_events", "validate_quality", "dedupe_events"}
+    assert set(dag.task_ids) == {"extract_events", "validate_quality", "resolve_venues", "dedupe_events"}
     assert dag.get_task("validate_quality").upstream_task_ids == {"extract_events"}
-    assert dag.get_task("dedupe_events").upstream_task_ids == {"validate_quality"}
+    assert dag.get_task("resolve_venues").upstream_task_ids == {"validate_quality"}
+    assert dag.get_task("dedupe_events").upstream_task_ids == {"resolve_venues"}
     assert [a.name for a in dag.get_task("dedupe_events").outlets] == ["catalog_events"]
 
 

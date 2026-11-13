@@ -1,0 +1,254 @@
+# Площадки Липецка: как называть их на сайте и как их пишут в анонсах.
+#
+#   slug      постоянный ключ (a-z, 0-9, дефис). На него ссылаются источники
+#             (venue: в sources/lipetsk.yaml), позже — адреса страниц площадок.
+#   name      как показывать на сайте. Само название — тоже вариант написания.
+#   address   адрес для сайта. Тоже участвует в поиске: «ул. Ленина, 31» без
+#             названия найдёт библиотеку Бартенева.
+#   aliases   другие варианты написания. Сравниваются по основам слов, без
+#             регистра, кавычек, «ул.» и инициалов, поэтому «Есенин» покрывает и
+#             «Есенинская библиотека», и «библиотека им. С. А. Есенина».
+#             Вариант подходит, если все его слова есть в тексте места.
+#
+# После правки справочника: ingest_vk перенесёт его в базу при следующем
+# запуске (или запустите ingest_vk вручную), затем process_events
+# с параметром «Пересобрать каталог» — чтобы старые события тоже привязались.
+# Что ещё не привязано: SELECT * FROM staging.unmatched_venues ORDER BY mentions DESC;
+
+# --- Клубы, бары, галереи ---
+
+- slug: atmosfera
+  name: Культ-клуб «Атмосфера»
+  address: ул. Фрунзе, 1
+  aliases: [Атмосфера]
+
+- slug: buksir
+  name: Галерея современного искусства «Буксир»
+  address: ул. Зегеля, 1
+  aliases: [Буксир]
+
+- slug: prachechnaya
+  name: Учреждение культуры «Прачечная»
+  address: Заводская площадь, 9к2
+  aliases: [Прачечная]
+
+- slug: dacha
+  name: Гастробар «Дача»
+  address: ул. Интернациональная, 6
+
+- slug: bolshe-chem-bar
+  name: «Больше чем бар»
+  address: ул. Советская, 4
+
+- slug: vobla
+  name: Кафе «Вобла»
+  address: ул. 8 Марта, 36
+  aliases: [Вобла]
+
+- slug: mandarin
+  name: Студия «Мандарин»
+  address: ул. Свиридова, 6
+
+- slug: underground
+  name: Underground
+
+- slug: gnezdom
+  name: ГнезДом
+
+- slug: hrushchevka
+  name: Хрущёвка
+
+# --- ТРЦ и концертные площадки ---
+
+- slug: megapolis
+  name: КРК «Мегаполис»
+  aliases: [Мегаполис]
+
+- slug: riviera
+  name: ТРЦ «Ривьера»
+  address: ул. Катукова, 51
+  aliases: [Ривьера]
+
+- slug: evropa
+  name: ТРЦ «Европа»
+  address: ул. Советская, 66
+
+- slug: lebed
+  name: ГРК «Лебедь»
+
+- slug: filarmoniya
+  name: Филармония, концертный зал «Унион»
+  aliases: [Филармония, Унион]
+
+- slug: dom-muzyki
+  name: Дом музыки
+  address: ул. Осипенко, 18
+
+# --- Театры ---
+
+- slug: teatr-dramy
+  name: Театр драмы им. Л. Н. Толстого
+  aliases: [Театр драмы, Театр Толстого, Драматический театр]
+
+- slug: teatr-na-sokole
+  name: Театр «На Соколе»
+  # длиннее, чем «Драматический театр»: «драматический театр на Соколе» уйдёт сюда
+  aliases: [Театр на Соколе]
+
+- slug: teatr-kukol
+  name: Театр кукол
+
+- slug: kazaki-rossii
+  name: Театр танца «Казаки России»
+  address: пл. Петра Великого, 6
+
+- slug: paralleli
+  name: Театр «Параллели»
+
+# --- Дома культуры ---
+
+- slug: ocknt
+  name: Областной центр культуры, народного творчества и кино
+  address: ул. Космонавтов, 54а
+  aliases:
+    - ОЦКНТ        # «ОЦКНТиК» тоже: слова урезаются до 5 букв
+    - ОЦКиНТ
+    - Областной центр культуры
+    - Центр культуры, народного творчества и кино
+
+- slug: gorodskoy-dk
+  name: Городской ДК
+  address: ул. Коммунистическая, 20
+
+- slug: dk-sokol
+  name: ДК «Сокол»
+  address: пл. Константиновой, 3
+
+- slug: dk-rudnichny
+  name: ДК «Рудничный»
+
+# --- Музеи ---
+
+- slug: kraevedchesky-muzey
+  name: Областной краеведческий музей
+  address: ул. Ленина, 25
+  aliases: [Краеведческий музей]
+
+- slug: vystavochny-zal
+  name: Выставочный зал краеведческого музея
+  address: ул. Ленина, 9а
+  aliases: [Художественный музей]
+
+- slug: istoriko-kulturny-muzey
+  name: Историко-культурный музей
+  address: ул. Космонавтов, 2
+
+- slug: gorodskaya-uprava
+  name: Музей «Городская управа»
+  address: ул. Октябрьская, 57
+  aliases: [Городская управа]
+
+# --- Библиотеки ---
+
+- slug: biblioteka-barteneva
+  name: Библиотека им. П. И. Бартенева
+  address: ул. Ленина, 31
+  aliases: [Бартенев]
+
+- slug: biblioteka-esenina
+  name: Центральная городская библиотека им. С. А. Есенина
+  address: ул. Космонавтов, 15/3
+  aliases: [Есенин]
+
+- slug: biblioteka-prishvina
+  name: Детская библиотека им. М. М. Пришвина
+  address: ул. Циолковского, 27
+  # с «им.»: «библиотека на улице Пришвина» — это другое место
+  aliases: [им. Пришвина]
+
+- slug: biblioteka-sokolskaya
+  name: Библиотека «Сокольская»
+  address: пл. Константиновой, 3  # тот же адрес, что у ДК «Сокол»: по одному адресу место не привяжется
+
+- slug: biblioteka-nauchnaya
+  name: Областная научная библиотека
+  address: ул. Неделина, 31а
+  aliases: [Библиотека на Неделина]
+
+- slug: biblioteka-bunina
+  name: Библиотека им. И. А. Бунина
+  address: ул. Студенческий городок, 11а
+  aliases: [Бунин]
+
+- slug: biblioteka-semenova
+  name: Библиотека им. П. П. Семенова-Тян-Шанского
+  address: ул. Ильича, 16
+
+- slug: biblioteka-natsionalnyh-kultur
+  name: Библиотека национальных культур
+  address: ул. Московская, 117
+  aliases: [Национальных культур]
+
+- slug: biblioteka-guryevoy
+  name: Библиотека семейного чтения им. Г. С. Гурьевой
+  address: ул. Телеприка, 11
+  aliases: [Гурьевой]
+
+- slug: biblioteka-socialnaya
+  name: Библиотека «Социальная»
+  address: ул. Липовская, 2а
+
+# --- Спорт ---
+
+- slug: zvezdny
+  name: Дворец спорта «Звёздный»
+  address: ул. Терешковой, 13
+  aliases: [Звёздный]
+
+- slug: dinamo
+  name: ДС «Динамо»
+  # не просто «Динамо»: Атмосфера пишет «двор фабрики Динамо»
+  aliases: [Дворец спорта Динамо]
+
+- slug: metallurg
+  name: Стадион «Металлург»
+  address: ул. Первомайская, 59
+  aliases: [Стадион Металлург]
+
+# --- Под открытым небом ---
+
+- slug: park-pobedy
+  name: Парк Победы
+
+- slug: studenovsky-karier
+  name: Студёновский карьер
+
+- slug: lipetskoe-gorodishche
+  name: Липецкое городище
+
+- slug: silikatnye-ozera
+  name: Силикатные озёра
+
+- slug: tsentralny-plyazh
+  name: Центральный пляж
+  aliases: [Клуб моржей]
+
+- slug: zeleny-ostrov
+  name: Зелёный остров
+
+- slug: naberezhnaya
+  name: Набережная
+
+# --- Ещё площадки из непривязанных ---
+
+- slug: dk-matyra-pisareva
+  name: ДК «Матыра» на Писарева
+  address: ул. Писарева, 16
+
+- slug: dk-matyra-energostroiteley
+  name: ДК «Матыра» на Энергостроителей
+  address: ул. Энергостроителей, 5а
+
+- slug: tsentr-izo
+  name: Центр изобразительных искусств
+  address: ул. Космонавтов, 98

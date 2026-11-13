@@ -52,7 +52,7 @@ def test_bad_configs_rejected(tmp_path, body):
 
 def test_sync_is_idempotent_and_deactivates_removed(conn, tmp_path):
     cfg = load_city_config(write(tmp_path, "lipetsk.yaml", CITY))
-    assert sync_city(conn, cfg) == {"city": "lipetsk", "vk_sources": 2, "deactivated": 0}
+    assert sync_city(conn, cfg) == {"city": "lipetsk", "vk_sources": 2, "deactivated": 0, "venues": 0}
     assert sync_city(conn, cfg)["deactivated"] == 0
 
     shorter = load_city_config(write(tmp_path, "lipetsk.yaml", CITY.split("  - handle: second")[0]))
