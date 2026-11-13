@@ -1,4 +1,4 @@
-"""Создаёт .env из .env.example и заполняет секреты Airflow.
+"""Создаёт .env из .env.example: генерирует пароли баз и секреты Airflow.
 
 Запуск из корня репозитория: python scripts/init_env.py
 Существующий .env не перезаписывается. Нужен только стандартный Python.
@@ -20,6 +20,9 @@ def main() -> int:
         return 1
 
     generated = {
+        # Пароли — hex: без символов, которые пришлось бы кодировать в строке подключения.
+        "POSTGRES_PASSWORD": secrets.token_hex(16),
+        "FUNFINDER_DB_PASSWORD": secrets.token_hex(16),
         # Ключ Fernet — это 32 случайных байта в urlsafe base64.
         "AIRFLOW_FERNET_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
         "AIRFLOW_JWT_SECRET": secrets.token_urlsafe(32),
@@ -33,8 +36,8 @@ def main() -> int:
         lines.append(f"{key}={generated[key]}" if key in generated and not line.startswith("#") else line)
     env.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    print("Создан .env с секретами Airflow.")
-    print("Осталось вписать VK_SERVICE_TOKEN (см. README, «Токен VK»).")
+    print("Создан .env: сгенерированы пароли баз и секреты Airflow.")
+    print("Осталось вписать VK_SERVICE_TOKEN, YANDEX_API_KEY и YANDEX_FOLDER_ID (см. README).")
     return 0
 
 

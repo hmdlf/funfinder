@@ -78,7 +78,7 @@ docker compose ps        # все сервисы healthy, airflow-init и funfin
 
 5. Открыть http://localhost:8080. Логин не нужен.
 6. DAG-и создаются на паузе: включить `ingest_vk` и `process_events`, у `ingest_vk` нажать **Trigger**. `process_events` запустится сам, когда загрузятся посты.
-7. Посмотреть данные: DBeaver или любой клиент → `127.0.0.1:5433`, база `funfinder`, пользователь и пароль из `.env` (по умолчанию `funfinder` / `funfinder`). Или `make psql`.
+7. Посмотреть данные: DBeaver или любой клиент → `127.0.0.1:5433`, база `funfinder`, пользователь и пароль из `.env` (`FUNFINDER_DB_USER`, `FUNFINDER_DB_PASSWORD`). Или `make psql`.
 
 ```sql
 -- что загрузилось за последний запуск
