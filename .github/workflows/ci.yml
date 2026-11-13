@@ -34,8 +34,9 @@ jobs:
 
       - name: Install
         run: |
-          pip install "apache-airflow[postgres]==${AIRFLOW_VERSION}" -r requirements.txt ruff \
+          pip install "apache-airflow[postgres]==${AIRFLOW_VERSION}" -r requirements.txt \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+          pip install ruff==0.17.5
 
       - name: Lint
         run: |
