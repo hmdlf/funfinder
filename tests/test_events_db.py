@@ -310,7 +310,7 @@ def test_reextract_reprocesses_only_old_prompt_versions(conn, lipetsk):
     llm = FakeLLM({})
     extract.run(conn, llm, now=NOW)
     with conn, conn.cursor() as cur:
-        cur.execute("UPDATE staging.vk_post_extractions SET prompt_version = 'v3' WHERE post_id = 1")
+        cur.execute("UPDATE staging.post_extractions SET prompt_version = 'v3' WHERE post_id = 1")
 
     assert extract.run(conn, llm, now=NOW) == {"posts": 0}  # без флага старые версии не трогаем
     assert extract.run(conn, llm, reextract=True, now=NOW)["posts"] == 1  # только пост со старым промптом

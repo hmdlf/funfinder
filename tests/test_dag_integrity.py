@@ -36,6 +36,21 @@ def test_ingest_vk_structure(dagbag):
     assert [a.name for a in dag.get_task("emit_asset").outlets] == ["raw_vk_posts"]
 
 
+def test_ingest_tg_structure(dagbag):
+    dag = dagbag.dags["ingest_tg"]
+    assert set(dag.task_ids) == {"sync_sources", "list_sources", "fetch_channel", "emit_asset", "watcher"}
+    assert dag.get_task("list_sources").upstream_task_ids == {"sync_sources"}
+    assert dag.get_task("emit_asset").upstream_task_ids == {"fetch_channel"}
+    assert [a.name for a in dag.get_task("emit_asset").outlets] == ["raw_tg_posts"]
+
+
+def test_process_events_runs_on_either_platform(dagbag):
+    dag = dagbag.dags["process_events"]
+    condition = dag.timetable.asset_condition  # AssetAny: хватит любого из двух
+    assert type(condition).__name__ == "AssetAny"
+    assert {a.name for a in condition.objects} == {"raw_vk_posts", "raw_tg_posts"}
+
+
 def test_process_events_structure(dagbag):
     dag = dagbag.dags["process_events"]
     assert set(dag.task_ids) == {"extract_events", "validate_quality", "resolve_venues", "dedupe_events"}

@@ -1,6 +1,9 @@
 """Список источников и площадок: файлы sources/<город>.yaml и
 sources/venues/<город>.yaml → таблицы meta.cities, meta.sources, meta.venues.
 
+Источники — по разделам платформ: vk: (сообщества VK) и tg: (публичные
+каналы Telegram).
+
 Файл — источник правды: добавили паблик в yaml, на следующем запуске он
 появится в базе. Убрали из yaml — источник станет неактивным (is_active =
 false), а уже загруженные посты останутся. Площадки, убранные из
@@ -17,6 +20,7 @@ import yaml
 from psycopg2.extras import Json
 
 from funfinder.events.venues import is_generic, venue_tokens
+from funfinder.tg.ingest import TGSettings, normalize_channel
 from funfinder.vk.ingest import IngestSettings, normalize_handle
 
 SLUG_RE = re.compile(r"^[a-z0-9-]+$")
@@ -49,7 +53,18 @@ class CityConfig:
     timezone: str
     language: str = "ru"
     vk: tuple[SourceConfig, ...] = ()
+    tg: tuple[SourceConfig, ...] = ()
     venues: tuple[VenueConfig, ...] = ()
+
+    def sources(self, platform: str) -> tuple[SourceConfig, ...]:
+        return getattr(self, platform)
+
+
+# Платформа → (как привести имя к одному виду, класс настроек загрузки).
+PLATFORMS = {
+    "vk": (normalize_handle, IngestSettings),
+    "tg": (normalize_channel, TGSettings),
+}
 
 
 def sources_dir() -> Path:
@@ -127,33 +142,42 @@ def load_city_config(path: Path) -> CityConfig:
     venues = load_venues(path.parent / "venues" / f"{slug}.yaml")
     venue_slugs = {v.slug for v in venues}
 
-    vk_sources: list[SourceConfig] = []
-    seen: set[str] = set()
-    for i, item in enumerate(data.get("vk") or []):
-        if not isinstance(item, dict) or not item.get("handle"):
-            raise SourcesConfigError(f"{path.name}: vk[{i}] — нужен как минимум handle")
-        handle = normalize_handle(str(item["handle"]))
-        if handle in seen:
-            raise SourcesConfigError(f"{path.name}: источник {handle} указан дважды")
-        seen.add(handle)
-        settings = item.get("settings") or {}
-        try:
-            IngestSettings.from_overrides(settings)  # проверяем ключи заранее
-        except ValueError as exc:
-            raise SourcesConfigError(f"{path.name}: vk[{i}] ({handle}): {exc}") from exc
-        venue = item.get("venue")
-        if venue is not None and venue not in venue_slugs:
-            raise SourcesConfigError(f"{path.name}: vk[{i}] ({handle}): площадки {venue!r} нет в venues/{slug}.yaml")
-        vk_sources.append(SourceConfig(handle=handle, note=item.get("note"), settings=settings, venue=venue))
-
+    by_platform = {
+        platform: _load_sources(path, data.get(platform) or [], platform, venue_slugs) for platform in PLATFORMS
+    }
     return CityConfig(
         slug=slug,
         name=city["name"],
         timezone=tz,
         language=city.get("language", "ru"),
-        vk=tuple(vk_sources),
         venues=venues,
+        **by_platform,
     )
+
+
+def _load_sources(path: Path, items: list, platform: str, venue_slugs: set[str]) -> tuple[SourceConfig, ...]:
+    normalize, settings_cls = PLATFORMS[platform]
+    result: list[SourceConfig] = []
+    for i, item in enumerate(items):
+        where = f"{path.name}: {platform}[{i}]"
+        if not isinstance(item, dict) or not item.get("handle"):
+            raise SourcesConfigError(f"{where} — нужен как минимум handle")
+        try:
+            handle = normalize(str(item["handle"]))
+        except ValueError as exc:
+            raise SourcesConfigError(f"{where}: {exc}") from exc
+        if any(s.handle == handle for s in result):
+            raise SourcesConfigError(f"{path.name}: источник {handle} указан дважды")
+        settings = item.get("settings") or {}
+        try:
+            settings_cls.from_overrides(settings)  # проверяем ключи заранее
+        except ValueError as exc:
+            raise SourcesConfigError(f"{where} ({handle}): {exc}") from exc
+        venue = item.get("venue")
+        if venue is not None and venue not in venue_slugs:
+            raise SourcesConfigError(f"{where} ({handle}): площадки {venue!r} нет в venues/")
+        result.append(SourceConfig(handle=handle, note=item.get("note"), settings=settings, venue=venue))
+    return tuple(result)
 
 
 def load_all(directory: Path | None = None) -> list[CityConfig]:
@@ -167,7 +191,7 @@ def load_all(directory: Path | None = None) -> list[CityConfig]:
 
 
 def sync_city(conn, cfg: CityConfig) -> dict:
-    """Записывает город и его VK-источники в базу. Идемпотентно."""
+    """Записывает город, площадки и источники всех платформ в базу. Идемпотентно."""
     with conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -185,34 +209,41 @@ def sync_city(conn, cfg: CityConfig) -> dict:
         city_id = cur.fetchone()[0]
         venue_ids = _sync_venues(cur, city_id, cfg.venues)
 
-        for src in cfg.vk:
+        deactivated = 0
+        for platform in PLATFORMS:
+            for src in cfg.sources(platform):
+                cur.execute(
+                    """
+                    INSERT INTO meta.sources (city_id, platform, handle, note, settings, venue_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (platform, handle) DO UPDATE
+                       SET city_id = EXCLUDED.city_id,
+                           note = EXCLUDED.note,
+                           settings = EXCLUDED.settings,
+                           venue_id = EXCLUDED.venue_id,
+                           is_active = true,
+                           updated_at = now()
+                    """,
+                    (city_id, platform, src.handle, src.note, Json(src.settings), venue_ids.get(src.venue)),
+                )
             cur.execute(
                 """
-                INSERT INTO meta.sources (city_id, platform, handle, note, settings, venue_id)
-                VALUES (%s, 'vk', %s, %s, %s, %s)
-                ON CONFLICT (platform, handle) DO UPDATE
-                   SET city_id = EXCLUDED.city_id,
-                       note = EXCLUDED.note,
-                       settings = EXCLUDED.settings,
-                       venue_id = EXCLUDED.venue_id,
-                       is_active = true,
-                       updated_at = now()
+                UPDATE meta.sources
+                   SET is_active = false, updated_at = now()
+                 WHERE city_id = %s AND platform = %s AND is_active
+                   AND NOT (handle = ANY(%s))
                 """,
-                (city_id, src.handle, src.note, Json(src.settings), venue_ids.get(src.venue)),
+                (city_id, platform, [s.handle for s in cfg.sources(platform)]),
             )
+            deactivated += cur.rowcount
 
-        cur.execute(
-            """
-            UPDATE meta.sources
-               SET is_active = false, updated_at = now()
-             WHERE city_id = %s AND platform = 'vk' AND is_active
-               AND NOT (handle = ANY(%s))
-            """,
-            (city_id, [s.handle for s in cfg.vk]),
-        )
-        deactivated = cur.rowcount
-
-    return {"city": cfg.slug, "vk_sources": len(cfg.vk), "deactivated": deactivated, "venues": len(cfg.venues)}
+    return {
+        "city": cfg.slug,
+        "vk_sources": len(cfg.vk),
+        "tg_sources": len(cfg.tg),
+        "deactivated": deactivated,
+        "venues": len(cfg.venues),
+    }
 
 
 def _sync_venues(cur, city_id: int, venues: tuple[VenueConfig, ...]) -> dict[str, int]:

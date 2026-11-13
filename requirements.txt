@@ -6,9 +6,9 @@ PyYAML
 psycopg2-binary   # код проекта работает через psycopg2, а не psycopg 3
 openai            # LLM через OpenAI-совместимый API Yandex AI Studio
 rapidfuzz         # похожесть названий при склейке дублей
-paramiko          # выкладка сайта на сервер по SSH
+paramiko          # выкладка сайта на сервер по SSH; загрузка Telegram через сервер
+jinja2            # шаблоны сайта
+beautifulsoup4    # разбор веб-версии каналов Telegram (t.me/s/...)
 
 # Тесты гоняем внутри того же образа, что и DAG-и.
 pytest==9.2.0
-
-jinja2  # шаблоны сайта

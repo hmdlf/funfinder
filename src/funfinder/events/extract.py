@@ -1,6 +1,9 @@
-"""extract_events: новые и изменённые посты из raw.vk_posts → LLM → staging.events.
+"""extract_events: новые и изменённые посты из raw.posts → LLM → staging.events.
 
-Какие посты берём: тех нет в журнале staging.vk_post_extractions, или у них
+raw.posts — общий вид постов всех платформ (VK, Telegram). Пост везде
+определяется парой (source_id, post_id).
+
+Какие посты берём: тех нет в журнале staging.post_extractions, или у них
 поменялся content_hash (организатор отредактировал пост). Старше
 MAX_POST_AGE_DAYS не берём: их события почти наверняка прошли.
 
@@ -30,12 +33,12 @@ log = logging.getLogger(__name__)
 MAX_POST_AGE_DAYS = 30
 
 SELECT_POSTS = """
-SELECT p.owner_id, p.post_id, p.source_id, s.city_id, c.name, c.timezone,
-       p.url, p.published_at, p.text, p.repost_text, p.content_hash
-  FROM raw.vk_posts p
+SELECT p.platform, p.source_id, p.post_id, s.city_id, c.name, c.timezone,
+       p.url, p.published_at, p.text, p.quoted_text, p.content_hash
+  FROM raw.posts p
   JOIN meta.sources s ON s.source_id = p.source_id
   JOIN meta.cities c ON c.city_id = s.city_id
-  LEFT JOIN staging.vk_post_extractions x ON x.owner_id = p.owner_id AND x.post_id = p.post_id
+  LEFT JOIN staging.post_extractions x ON x.source_id = p.source_id AND x.post_id = p.post_id
  WHERE p.published_at >= %(now)s - make_interval(days => %(max_age_days)s)
    AND (x.content_hash IS DISTINCT FROM p.content_hash
         OR x.status = 'timeout'  -- модель не успела ответить в прошлый раз
@@ -45,16 +48,16 @@ SELECT p.owner_id, p.post_id, p.source_id, s.city_id, c.name, c.timezone,
 
 INSERT_EVENT = """
 INSERT INTO staging.events
-       (source_id, city_id, owner_id, post_id, source_url, published_at,
+       (source_id, city_id, post_id, source_url, published_at,
         title, event_date, event_time, venue, price, category, status)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 UPSERT_JOURNAL = """
-INSERT INTO staging.vk_post_extractions
-       (owner_id, post_id, content_hash, status, model, prompt_version, tokens_in, tokens_out, raw_answer)
+INSERT INTO staging.post_extractions
+       (source_id, post_id, content_hash, status, model, prompt_version, tokens_in, tokens_out, raw_answer)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (owner_id, post_id) DO UPDATE SET
+ON CONFLICT (source_id, post_id) DO UPDATE SET
        content_hash   = EXCLUDED.content_hash,
        status         = EXCLUDED.status,
        model          = EXCLUDED.model,
@@ -109,10 +112,15 @@ def clean_category(value) -> str | None:
     return s.lower() if s else None
 
 
-def post_text(text: str, repost_text: str) -> str:
-    """Текст для модели: сам пост и текст репоста — анонс часто именно в репосте."""
-    if repost_text.strip():
-        return f"{text}\n\n[Репост]\n{repost_text}".strip()
+# Как подписать текст, без которого пост непонятен: в VK анонс часто в репосте,
+# в Telegram «Сегодня в 20:00» — ответ на пост с программой на месяц.
+QUOTE_LABELS = {"vk": "Репост", "tg": "Ответ на пост"}
+
+
+def post_text(text: str, quoted_text: str, label: str = "Репост") -> str:
+    """Текст для модели: сам пост и процитированный — репост или пост, на который ответили."""
+    if quoted_text.strip():
+        return f"{text}\n\n[{label}]\n{quoted_text}".strip()
     return text.strip()
 
 
@@ -126,8 +134,8 @@ def save_result(conn, post: dict, result: LLMResult) -> None:
     """Старые упоминания поста → удалить, новые → вставить, журнал → обновить. Всё в одной транзакции."""
     with conn, conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM staging.events WHERE owner_id = %s AND post_id = %s",
-            (post["owner_id"], post["post_id"]),
+            "DELETE FROM staging.events WHERE source_id = %s AND post_id = %s",
+            (post["source_id"], post["post_id"]),
         )
         for e in result.events:
             cur.execute(
@@ -135,7 +143,6 @@ def save_result(conn, post: dict, result: LLMResult) -> None:
                 (
                     post["source_id"],
                     post["city_id"],
-                    post["owner_id"],
                     post["post_id"],
                     post["url"],
                     post["published_at"],
@@ -151,7 +158,7 @@ def save_result(conn, post: dict, result: LLMResult) -> None:
         cur.execute(
             UPSERT_JOURNAL,
             (
-                post["owner_id"],
+                post["source_id"],
                 post["post_id"],
                 post["content_hash"],
                 result.status,
@@ -190,7 +197,7 @@ def run(
     for n, post in enumerate(posts, start=1):
         if n % 50 == 0:
             log.info("Обработано %d из %d", n, len(posts))
-        text = post_text(post.pop("text"), post.pop("repost_text"))
+        text = post_text(post.pop("text"), post.pop("quoted_text"), QUOTE_LABELS[post["platform"]])
         if text:
             message = build_user_message(
                 text, city=post["name"], published_at=post["published_at"], timezone=post["timezone"]

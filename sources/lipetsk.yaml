@@ -43,3 +43,13 @@ vk:
 - handle: 217225844
   note: Вау Квиз Липецк | Тематическая игра
 
+
+# Публичные каналы Telegram. Читаются через веб-версию t.me/s/<канал>, без
+# аккаунта и ключей. Из России t.me не открывается — см. README, «Telegram».
+# handle — имя канала или ссылка (https://t.me/sinitsabar, @sinitsabar).
+# Настройки (settings) те же по смыслу, что у VK: initial_lookback_days,
+# recheck_days, max_pages (страница — около 20 постов), page_delay_s.
+tg:
+- handle: sinitsabar
+  note: Бар «Синица»
+  venue: sinitsa

@@ -58,6 +58,11 @@
 - slug: hrushchevka
   name: Хрущёвка
 
+- slug: sinitsa
+  name: Бар «Синица»
+  address: ул. Фрунзе, 8
+  aliases: [Синица, Синичка]
+
 # --- ТРЦ и концертные площадки ---
 
 - slug: megapolis

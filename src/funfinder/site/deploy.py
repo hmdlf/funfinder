@@ -87,6 +87,26 @@ def _run(client: paramiko.SSHClient, command: str) -> None:
         raise RuntimeError(f"Команда на сервере завершилась с кодом {status}: {stderr.read().decode().strip()}")
 
 
+def connect(host: str, *, user: str, key_path: Path, known_hosts_path: Path, port: int = 22) -> paramiko.SSHClient:
+    """SSH-соединение с сервером только по ключу и только если ключ сервера есть в known_hosts.
+
+    Общее для выкладки сайта и для загрузки Telegram через сервер (funfinder.tg.fetch).
+    """
+    client = paramiko.SSHClient()
+    load_known_hosts(client, known_hosts_path)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    client.connect(
+        host,
+        port=port,
+        username=user,
+        key_filename=str(key_path),
+        look_for_keys=False,
+        allow_agent=False,
+        timeout=30,
+    )
+    return client
+
+
 def deploy(
     local_dir: Path,
     *,
@@ -102,18 +122,7 @@ def deploy(
     if not (local_dir / "index.html").exists():
         raise FileNotFoundError(f"В {local_dir} нет собранного сайта")
 
-    client = paramiko.SSHClient()
-    load_known_hosts(client, known_hosts_path)
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    client.connect(
-        host,
-        port=port,
-        username=user,
-        key_filename=str(key_path),
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=30,
-    )
+    client = connect(host, user=user, key_path=key_path, known_hosts_path=known_hosts_path, port=port)
     try:
         release = release_name(now)
         with client.open_sftp() as sftp:

@@ -1,11 +1,13 @@
 """
 ### process_events — из сырых постов в каталог событий
 
-Запускается сам, когда `ingest_vk` публикует Asset `raw_vk_posts`.
+Запускается сам, когда `ingest_vk` или `ingest_tg` публикует Asset
+`raw_vk_posts` или `raw_tg_posts`.
 
-1. **extract_events** — новые и изменённые посты за последние 30 дней
-   (вместе с текстом репоста) отправляет в LLM. События пишет в
-   `staging.events`, итог по посту — в журнал `staging.vk_post_extractions`
+1. **extract_events** — новые и изменённые посты обеих платформ за последние
+   30 дней (вместе с текстом репоста VK или цитатой ответа в Telegram)
+   отправляет в LLM. События пишет в
+   `staging.events`, итог по посту — в журнал `staging.post_extractions`
    (статус, модель, токены). Одна транзакция на пост: ретрай продолжит
    с того места, где упал. Если модель не ответила за 2 минуты, пост
    получает статус `timeout` и перепрогоняется в следующем запуске,
@@ -42,7 +44,7 @@ import pendulum
 from airflow.sdk import Connection, Param, Variable, dag, get_current_context, task
 from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
-from funfinder.assets import CATALOG_EVENTS, RAW_VK_POSTS
+from funfinder.assets import CATALOG_EVENTS, RAW_TG_POSTS, RAW_VK_POSTS
 from funfinder.db import connect
 from funfinder.events import dedupe, extract, validate, venues
 from funfinder.events.llm import LLMClient, LLMConfigError
@@ -59,7 +61,7 @@ def _connect():
 
 @dag(
     dag_id="process_events",
-    schedule=[RAW_VK_POSTS],  # по событию: как только ingest_vk загрузил новые или изменённые посты
+    schedule=(RAW_VK_POSTS | RAW_TG_POSTS),  # по событию: любая платформа загрузила новые или изменённые посты
     start_date=pendulum.datetime(2026, 11, 1, tz="Europe/Moscow"),
     catchup=False,
     max_active_runs=1,  # два запуска одновременно склеивали бы одни и те же строки

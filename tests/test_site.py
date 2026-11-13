@@ -172,9 +172,9 @@ def test_run_builds_from_catalog(conn, lipetsk, tmp_path):
         for (event_id,) in cur.fetchall():
             cur.execute(
                 """
-                INSERT INTO staging.events (source_id, city_id, owner_id, post_id, source_url, published_at,
+                INSERT INTO staging.events (source_id, city_id, post_id, source_url, published_at,
                                             title, event_date, validated, event_id)
-                VALUES (%s, %s, -1, %s, %s, now(), 'x', %s, true, %s)
+                VALUES (%s, %s, %s, %s, now(), 'x', %s, true, %s)
                 """,
                 (lipetsk["source_id"], city_id, event_id, f"https://vk.com/wall-1_{event_id}", soon, event_id),
             )

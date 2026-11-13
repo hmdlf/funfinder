@@ -41,6 +41,8 @@ x-airflow-common: &airflow-common
     AIRFLOW_VAR_SITE_DEPLOY_HOST: ${SITE_DEPLOY_HOST:-}
     AIRFLOW_VAR_SITE_DEPLOY_USER: ${SITE_DEPLOY_USER:-deploy}
     AIRFLOW_VAR_SITE_DEPLOY_DIR: ${SITE_DEPLOY_DIR:-/var/www/matingu}
+    # Telegram: из России t.me не открывается — true значит «загружать через сервер сайта по SSH».
+    AIRFLOW_VAR_TG_FETCH_VIA_SSH: ${TG_FETCH_VIA_SSH:-false}
     FUNFINDER_SOURCES_DIR: /opt/airflow/sources
   volumes:
     - ./dags:/opt/airflow/dags
