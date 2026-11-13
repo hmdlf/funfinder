@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block head %}
+<link rel="canonical" href="{{ page_url }}">
+<meta name="description" content="{{ h1 }}: концерты, спектакли, выставки и встречи на ближайшие дни. Дата, время, место и ссылка на анонс.">
+<meta property="og:title" content="{{ title }}">
+<meta property="og:url" content="{{ page_url }}">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="ru_RU">
+<script type="application/ld+json">{{ json_ld | safe }}</script>
+{% endblock %}
+
+{% block body %}
+<header class="masthead">
+  <a class="wordmark" href="/{{ city.slug }}/">matingu</a>
+  <span class="masthead-city">{{ city.name }}</span>
+</header>
+
+<main data-tz="{{ city.timezone }}">
+  <h1>{{ h1 }}</h1>
+  <p class="lede">Концерты, спектакли, выставки, квизы и встречи из городских пабликов в одном списке.</p>
+  <p class="updated">Обновлено {{ built_at }}</p>
+
+  <nav class="categories" aria-label="Категории">
+    <a href="/{{ city.slug }}/"{% if not current %} aria-current="page"{% endif %}>Всё</a>
+    {% for c in nav %}
+    <a href="/{{ city.slug }}/{{ c.slug }}/"{% if c.slug == current %} aria-current="page"{% endif %}>{{ c.name }}</a>
+    {% endfor %}
+  </nav>
+
+  {% if days %}
+  <div class="when" role="group" aria-label="Когда" hidden>
+    <button type="button" data-when="all" aria-pressed="true">Все дни</button>
+    <button type="button" data-when="today" aria-pressed="false">Сегодня</button>
+    <button type="button" data-when="tomorrow" aria-pressed="false">Завтра</button>
+    <button type="button" data-when="weekend" aria-pressed="false">Выходные</button>
+  </div>
+
+  <div class="days">
+    {% for d in days %}
+    <section class="day" data-date="{{ d.day.isoformat() }}" aria-labelledby="d{{ d.day.isoformat() }}">
+      <h2 class="day-head" id="d{{ d.day.isoformat() }}">
+        <span class="day-num">{{ d.day.day }}</span>
+        <span class="day-meta">
+          <span class="day-month">{{ d.month }}</span>
+          <span class="day-name"><span class="day-rel"></span><span class="wd-full">{{ d.weekday }}</span><abbr class="wd-short" title="{{ d.weekday }}">{{ d.weekday_short }}</abbr></span>
+        </span>
+      </h2>
+      <ol class="events">
+        {% for e in d.events %}
+        <li class="event{% if e.status != 'scheduled' %} is-{{ e.status }}{% endif %}">
+          {% if e.at %}
+          <time class="event-time" datetime="{{ d.day.isoformat() }}T{{ e.at.strftime('%H:%M') }}">{{ e.at.strftime('%H:%M') }}</time>
+          {% else %}
+          <span class="event-time is-unknown" title="Время не указано">—<span class="visually-hidden">время не указано</span></span>
+          {% endif %}
+          <div class="event-body">
+            <a class="event-title" href="{{ e.url }}" target="_blank" rel="noopener">{{ e.title }}</a>
+            {% if e.status_label %}<span class="event-status">{{ e.status_label }}</span>{% endif %}
+            <p class="event-place">{{ e.venue or "Место уточняйте в анонсе" }}</p>
+            {% if not current or e.price %}
+            <p class="event-meta">
+              {%- if not current %}{{ e.category_name }}{% endif -%}
+              {%- if not current and e.price %}, {% endif -%}
+              {%- if e.price %}{{ e.price }}{% endif -%}
+            </p>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ol>
+    </section>
+    {% endfor %}
+  </div>
+
+  <div class="empty" hidden>
+    <p class="empty-text"></p>
+    <button type="button" data-when="all">Показать все дни</button>
+  </div>
+  {% else %}
+  <div class="empty">
+    <p class="empty-text">Будущих событий в этом разделе пока нет. Загляните позже: афиша обновляется по мере новых анонсов.</p>
+  </div>
+  {% endif %}
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="/assets/site.js?v={{ asset_version }}" defer></script>
+{% endblock %}

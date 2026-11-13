@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}matingu: куда сходить в городе{% endblock %}
+
+{% block head %}
+{% if cities | length == 1 %}
+<meta http-equiv="refresh" content="0; url=/{{ cities[0].slug }}/">
+<link rel="canonical" href="{{ site_url }}/{{ cities[0].slug }}/">
+{% endif %}
+{% endblock %}
+
+{% block body %}
+<header class="masthead">
+  <span class="wordmark">matingu</span>
+</header>
+<main>
+  <h1>Куда сходить в городе</h1>
+  <nav class="cities" aria-label="Города">
+    {% for c in cities %}
+    <a href="/{{ c.slug }}/">{{ c.name }}</a>
+    {% endfor %}
+  </nav>
+</main>
+{% endblock %}

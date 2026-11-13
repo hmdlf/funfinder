@@ -35,6 +35,12 @@ x-airflow-common: &airflow-common
     AIRFLOW_VAR_VK_SERVICE_TOKEN: ${VK_SERVICE_TOKEN}
     AIRFLOW_VAR_YANDEX_API_KEY: ${YANDEX_API_KEY}
     AIRFLOW_VAR_YANDEX_FOLDER_ID: ${YANDEX_FOLDER_ID}
+    # Сайт: адрес и куда выкладывать. Пустой SITE_DEPLOY_HOST — сайт собирается только локально.
+    AIRFLOW_VAR_SITE_URL: ${SITE_URL:-https://matingu.com}
+    AIRFLOW_VAR_SITE_CONTACT: ${SITE_CONTACT:-}
+    AIRFLOW_VAR_SITE_DEPLOY_HOST: ${SITE_DEPLOY_HOST:-}
+    AIRFLOW_VAR_SITE_DEPLOY_USER: ${SITE_DEPLOY_USER:-deploy}
+    AIRFLOW_VAR_SITE_DEPLOY_DIR: ${SITE_DEPLOY_DIR:-/var/www/matingu}
     FUNFINDER_SOURCES_DIR: /opt/airflow/sources
   volumes:
     - ./dags:/opt/airflow/dags
@@ -44,6 +50,8 @@ x-airflow-common: &airflow-common
     - ./logs:/opt/airflow/logs
     - ./config:/opt/airflow/config
     - ./plugins:/opt/airflow/plugins
+    - ./site_build:/opt/airflow/site_build       # собранный сайт: site_build/site
+    - ./secrets:/opt/airflow/secrets:ro          # ключ деплоя и known_hosts сервера
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
     postgres:

@@ -6,6 +6,7 @@ PyYAML
 psycopg2-binary   # код проекта работает через psycopg2, а не psycopg 3
 openai            # LLM через OpenAI-совместимый API Yandex AI Studio
 rapidfuzz         # похожесть названий при склейке дублей
+paramiko          # выкладка сайта на сервер по SSH
 
 # Тесты гоняем внутри того же образа, что и DAG-и.
 pytest==9.2.0

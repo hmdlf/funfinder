@@ -42,3 +42,9 @@ def test_process_events_structure(dagbag):
     assert dag.get_task("validate_quality").upstream_task_ids == {"extract_events"}
     assert dag.get_task("dedupe_events").upstream_task_ids == {"validate_quality"}
     assert [a.name for a in dag.get_task("dedupe_events").outlets] == ["catalog_events"]
+
+
+def test_build_site_structure(dagbag):
+    dag = dagbag.dags["build_site"]
+    assert set(dag.task_ids) == {"render_site", "deploy_site"}
+    assert dag.get_task("deploy_site").upstream_task_ids == {"render_site"}

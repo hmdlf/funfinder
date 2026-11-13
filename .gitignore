@@ -5,6 +5,11 @@ config/*
 !config/.gitkeep
 plugins/*
 !plugins/.gitkeep
+site_build/*
+!site_build/.gitkeep
+# ключ деплоя сайта и known_hosts сервера — никогда в git
+secrets/*
+!secrets/.gitkeep
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -17,3 +22,4 @@ __pycache__/
 /first_try.py
 /scratch_*.py
 /blur.txt
+site_build/

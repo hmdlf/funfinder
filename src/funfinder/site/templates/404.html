@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}Страница не найдена: matingu{% endblock %}
+
+{% block body %}
+<header class="masthead">
+  <a class="wordmark" href="/">matingu</a>
+</header>
+<main>
+  <h1>Такой страницы нет</h1>
+  <p class="lede">Возможно, событие уже прошло или ссылка устарела. Свежая афиша здесь:</p>
+  <nav class="cities" aria-label="Города">
+    {% for c in cities %}
+    <a href="/{{ c.slug }}/">{{ c.name }}</a>
+    {% endfor %}
+  </nav>
+</main>
+{% endblock %}

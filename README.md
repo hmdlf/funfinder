@@ -4,7 +4,7 @@
 
 Пайплайн на **Apache Airflow 3** и **PostgreSQL**, извлечение событий из текста — **LLM** (Yandex AI Studio).
 
-**Статус: этап 0 готов.** Посты VK загружаются в `raw`, LLM извлекает из них события, проверки качества отправляют плохое в карантин, дубли склеиваются в каталог. Дальше — этап 1: сайт-афиша на своём домене (`build_site` по Asset `catalog_events`) и канал с подборками (`publish`).
+**Статус: этап 1 в работе.** Этап 0 готов: посты VK загружаются в `raw`, LLM извлекает из них события, проверки качества отправляют плохое в карантин, дубли склеиваются в каталог. Из каталога собирается сайт-афиша [matingu.com](https://matingu.com) и выкладывается на сервер. Дальше — канал с ежедневными подборками (`publish`).
 
 ## Как устроено
 
@@ -25,7 +25,12 @@ flowchart LR
     X --> ST[(staging.events)]
     V --> Q[(quarantine.events)]
     D --> C[(catalog.events)]
-    D -.->|Asset catalog_events| B["build_site<br/>(следующий шаг)"]
+    D -.->|Asset catalog_events| RS
+    subgraph build_site ["build_site, по Asset"]
+        RS[render_site] --> DS[deploy_site]
+    end
+    C --> RS
+    DS -->|SSH| W[(nginx, matingu.com)]
 ```
 
 **`ingest_vk`** — каждые 3 часа забирает посты из пабликов.
@@ -45,6 +50,13 @@ flowchart LR
 | `extract_events` | Новые и изменённые посты за 30 дней (вместе с текстом репоста) отправляет в LLM. События пишет в `staging.events`, итог по посту — в журнал `staging.vk_post_extractions`: статус, модель, версия промпта, токены. |
 | `validate_quality` | Проверяет новые события: без названия, без даты, дата раньше публикации, дата больше чем на год вперёд → карантин. Категория не из справочника → `other`. |
 | `dedupe_events` | Склеивает упоминания одного события из разных постов и разных запусков в `catalog.events`. Если каталог изменился, публикует Asset `catalog_events`. |
+
+**`build_site`** — запускается сам по Asset `catalog_events`.
+
+| Задача | Что делает |
+|---|---|
+| `render_site` | Собирает статические страницы из `catalog.events_public` в `site_build/site/`: страницу города, страницы категорий, sitemap, robots, 404. Сначала во временную папку, потом подменяет: упавшая сборка не портит предыдущую. |
+| `deploy_site` | Заливает собранное на сервер по SSH в новую папку `releases/<время>/` и атомарно переключает на неё ссылку `current`. Если сервер не настроен, пропускается: сайт собран только локально. |
 
 При ручном запуске у `process_events` есть два параметра:
 - **`rebuild_catalog`** — пересобрать каталог из `staging.events` с нуля. LLM не вызывается, бесплатно. Нужно после смены правил склейки.
@@ -122,6 +134,50 @@ SELECT status, count(*), sum(tokens_in) AS tokens_in, sum(tokens_out) AS tokens_
 
 Модели задаются в `src/funfinder/events/llm.py` (`MODELS`): основная **Alice AI LLM Flash**, запасная **Qwen3.6-35B**. Доступный аккаунту список — в Model Gallery AI Studio; он может не совпадать с документацией (`gpt-oss-20b` из документации отвечал 403).
 
+## Сайт: сервер
+
+Сайт — статические файлы, их отдаёт nginx. Airflow выкладывает их по SSH отдельным ключом от отдельного пользователя без sudo: утечка ключа даёт доступ только к папке сайта.
+
+Посмотреть сайт без сервера: запустить `build_site`, затем `python -m http.server -d site_build/site 8000` → http://localhost:8000.
+
+**1. DNS.** У регистратора домена — A-записи `@` и `www` на IP сервера.
+
+**2. Ключ для выкладки** (на своём компьютере, в папке проекта, PowerShell):
+
+```powershell
+ssh-keygen -t ed25519 -C airflow-deploy -f secrets\deploy_key   # на вопрос о пароле — дважды Enter
+ssh-keyscan -t ed25519 <IP-сервера> | Out-File -Encoding ascii secrets\known_hosts
+Get-Content secrets\deploy_key.pub     # скопировать строку для шага 3
+```
+
+`secrets/` в git не попадает. `known_hosts` — ключ сервера: подменённый сервер выкладку не примет.
+
+**3. Пользователь `deploy` и папка сайта** (на сервере):
+
+```bash
+sudo adduser --disabled-password --gecos "" deploy
+sudo usermod -p '*' deploy     # пароля нет, но пользователь не заблокирован: вход по ключу работает
+sudo mkdir -p /home/deploy/.ssh /var/www/matingu
+echo "<строка из deploy_key.pub>" | sudo tee /home/deploy/.ssh/authorized_keys
+sudo chown -R deploy:deploy /home/deploy/.ssh /var/www/matingu
+sudo chmod 700 /home/deploy/.ssh && sudo chmod 600 /home/deploy/.ssh/authorized_keys
+```
+
+Без `usermod -p '*'` пользователь считается заблокированным (`!` вместо пароля), и при `UsePAM no` sshd не пустит его даже по ключу.
+
+**4. nginx и HTTPS** (на сервере; конфиг — `deploy/nginx/matingu.com.conf` из репозитория):
+
+```bash
+sudo nano /etc/nginx/sites-available/matingu.com            # вставить содержимое конфига
+sudo ln -s /etc/nginx/sites-available/matingu.com /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d matingu.com -d www.matingu.com --redirect
+```
+
+**5. `.env`** на своём компьютере: `SITE_DEPLOY_HOST=<IP-сервера>`, при желании `SITE_CONTACT` — почта или ссылка для организаторов. Затем `docker compose up -d --build` и запустить `build_site`.
+
+Откат на прошлую версию — переставить ссылку на сервере: `cd /var/www/matingu && ls releases && ln -sfn releases/<папка> current`.
+
 ## Модель данных
 
 Одна база Postgres-контейнера — метаданные Airflow (`airflow`), другая — данные проекта (`funfinder`). Внутри `funfinder` слои разнесены по схемам:
@@ -161,6 +217,14 @@ SELECT status, count(*), sum(tokens_in) AS tokens_in, sum(tokens_out) AS tokens_
 - **Ошибки трёх видов.** 4xx (ключ, права, имя модели) — `AirflowFailException`, повтор не поможет. 429 и 5xx — ретрай задачи. Таймаут и отказ фильтра — запасная модель, затем статус поста: `timeout` перепрогоняется в следующем запуске, `refused` — в карантин. Один «тяжёлый» пост не блокирует остальные.
 - **Ответ модели не доверяем.** Обёртка ```` ```json ```` снимается, поля чистятся (`"null"` строкой, `2026-11-25Tnull`, `19:00-20:15`), категории сверяются со справочником `meta.categories`.
 
+**Сайт**
+
+- **Статика, а даты — в браузере.** Страницы пересобираются, только когда меняется каталог. «Сегодня», «завтра» и «выходные» считает скрипт по часовому поясу города, прошедшие дни скрываются. Поэтому сайт не врёт, даже если компьютер с Airflow выключен.
+- **Атомарная выкладка.** Новая версия заливается целиком в `releases/<время>/`, затем ссылка `current` переключается одной командой (`mv -T` атомарен). Посетитель не видит полузалитый сайт; хранятся 5 последних версий для отката.
+- **Безопасность выкладки.** Отдельный ключ и пользователь без sudo, ключ сервера сверяется с `known_hosts` (`RejectPolicy`), а не принимается на веру.
+- **Текст из постов — недоверенный.** Шаблоны экранируют всё; в разметке schema.org/Event внутри `<script>` дополнительно экранируются `<`, `>`, `&`.
+- **SEO без трекеров.** Отдельная страница на категорию, `sitemap.xml`, разметка schema.org/Event для поисковиков. Шрифты лежат на своём сервере, ни аналитики, ни cookie, ни запросов к сторонним сервисам.
+
 **Качество и дубли**
 
 - **Карантин вместо удаления.** Плохое получает `quarantine_reason` и остаётся в базе: видно, что и почему отбраковано, правило можно поменять и перепроверить. Модель иногда извлекает фотоотчёты о прошедшем — проверка «дата раньше публикации» их ловит.
@@ -181,7 +245,8 @@ docker compose run --rm airflow-cli python -m pytest tests -q -p no:cacheprovide
 - `test_events_logic.py` — очистка полей ответа модели, разбор JSON, нормализация и сравнение названий на реальных парах из афиши Липецка, клиент LLM с поддельным API (таймауты, запасная модель, отказ фильтра). Без базы и сети.
 - `test_vk_ingest_db.py`, `test_sources_and_migrations.py` — на настоящем Postgres (база `funfinder_test`): идемпотентность, правки, дубли закреплённого поста, синхронизация yaml, миграции.
 - `test_events_db.py` — весь `process_events` на настоящем Postgres с поддельной LLM: склейка внутри запуска и через запуски, разные сеансы не склеиваются, карантин, правка поста (отмена события), повторный запуск без вызовов LLM, таймаут не блокирует остальные посты, пересборка каталога.
-- `test_dag_integrity.py` — DAG-и импортируются, у всех есть теги и ретраи, у `ingest_vk` и `process_events` правильный граф.
+- `test_site.py` — сборка страниц (экранирование, категории, отмены, sitemap, подмена папки), сборка из базы, команда атомарного переключения, чтение `known_hosts` в UTF-8 и UTF-16, порядок заливки.
+- `test_dag_integrity.py` — DAG-и импортируются, у всех есть теги и ретраи, у `ingest_vk`, `process_events` и `build_site` правильный граф.
 
 CI (GitHub Actions) гоняет линтер и те же тесты на каждый push.
 
@@ -207,6 +272,7 @@ CI (GitHub Actions) гоняет линтер и те же тесты на ка�
 dags/                       DAG-и: расписание, ретраи, граф. Логики минимум
   ingest_vk.py              посты VK → raw
   process_events.py         raw → staging → catalog
+  build_site.py             catalog → сайт → сервер
 src/funfinder/              логика, не зависит от Airflow
   db/migrate.py             мигратор
   db/migrations/            SQL-миграции
@@ -216,10 +282,16 @@ src/funfinder/              логика, не зависит от Airflow
   events/extract.py         посты → staging.events, журнал извлечения
   events/validate.py        проверки качества, карантин
   events/dedupe.py          склейка дублей в catalog.events
+  site/build.py             catalog.events_public → статические страницы
+  site/deploy.py            выкладка по SSH с атомарным переключением
+  site/templates/, static/  шаблоны Jinja2, стили, скрипт, шрифты
   sources.py                yaml → meta.sources
   ingest_log.py             журнал загрузок
   assets.py                 Assets Airflow
 sources/                    списки источников по городам
+deploy/nginx/               конфиг nginx для сервера
+site_build/                 собранный сайт (в git не попадает)
+secrets/                    ключ выкладки и known_hosts (в git не попадает)
 tests/
 docker/postgres-init/       создание баз проекта
 scripts/init_env.py         .env с секретами
