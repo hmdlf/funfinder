@@ -1,0 +1,11 @@
+# Зависимости поверх образа apache/airflow.
+# Версии не фиксируем там, где они уже есть в образе: pip оставит
+# установленные, а apache-airflow==<версия> в Dockerfile не даст их сломать.
+requests
+PyYAML
+psycopg2-binary   # код проекта работает через psycopg2, а не psycopg 3
+openai            # LLM через OpenAI-совместимый API Yandex AI Studio
+rapidfuzz         # похожесть названий при склейке дублей
+
+# Тесты гоняем внутри того же образа, что и DAG-и.
+pytest==9.2.0

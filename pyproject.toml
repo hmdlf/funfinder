@@ -1,0 +1,20 @@
+[project]
+name = "funfinder"
+version = "0.1.0"
+description = "Агрегатор городских событий: VK, Telegram, сайты → каталог, сайт, каналы"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["funfinder", "conftest"]

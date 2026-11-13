@@ -1,0 +1,19 @@
+.env
+logs/*
+!logs/.gitkeep
+config/*
+!config/.gitkeep
+plugins/*
+!plugins/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.idea/
+.vscode/
+
+# Черновики и выгрузки в корне — не для репозитория
+/*.csv
+/first_try.py
+/scratch_*.py
+/blur.txt

@@ -1,0 +1,38 @@
+# Источники событий Липецка.
+# Новый город — новый файл рядом, с тем же форматом.
+
+city:
+  slug: lipetsk            # пойдёт в URL сайта: /lipetsk/
+  name: Липецк
+  timezone: Europe/Moscow
+  language: ru
+
+# Публичные сообщества VK. handle — короткое имя из адреса:
+# vk.com/lipetsk_afisha → lipetsk_afisha, vk.com/club12345 → club12345.
+# Можно вставить и ссылку целиком, она нормализуется.
+#
+# settings — необязательные настройки загрузки для конкретного паблика:
+#   initial_lookback_days: 30   за сколько дней брать посты при первой загрузке
+#   recheck_days: 7             сколько последних дней перепроверять на правки
+#   max_pages: 10               максимум страниц по 100 постов за запуск
+#   wall_filter: owner          owner — только посты сообщества, all — и посты людей
+vk:
+#  - handle: example_public
+#    note: Афиша площадки X
+#  - handle: https://vk.com/club12345
+#    note: Настолки
+#    settings:
+#      initial_lookback_days: 60
+- handle: club221125269
+  note: Культ-клуб «Атмосфера» / Липецк
+- handle: club51369142
+  note: Афиша Липецк
+- handle: club154441145
+  note: Галерея современного искусства «Буксир»
+- handle: club216293636
+  note: Прачечная | учреждение культуры | Липецк
+- handle: 185616166
+  note: Библиотека | Липецк
+- handle: 217225844
+  note: Вау Квиз Липецк | Тематическая игра
+
