@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}{{ row.title }} — {% if past %}событие прошло{% else %}снято с афиши{% endif %} · {{ city.name }}{% endblock %}
+
+{% block head %}
+{# Страница для тех, кто пришёл по старой ссылке. В поиске ей делать нечего. #}
+<meta name="robots" content="noindex, follow">
+{% endblock %}
+
+{% block body %}
+<header class="masthead">
+  <a class="wordmark" href="/{{ city.slug }}/">matingu</a>
+  <span class="masthead-city">{{ city.name }}</span>
+</header>
+
+<main>
+  <article class="event-page is-gone">
+    <h1>{{ row.title }}</h1>
+    {% if past %}
+    <p class="lede">Это событие уже прошло: {{ date_text }}{% if row.venue %}, {{ row.venue }}{% endif %}.</p>
+    {% else %}
+    <p class="lede">Этого события больше нет в афише: возможно, его отменили или перенесли. Проверьте в анонсе.</p>
+    {% endif %}
+    {% if row.source_url %}
+    <p class="sources"><a href="{{ row.source_url }}" target="_blank" rel="noopener">Исходный анонс</a></p>
+    {% endif %}
+  </article>
+
+  {% if more_here %}
+  <section class="related" aria-labelledby="next">
+    <h2 id="next">{% if venue_known %}Скоро там же: {{ row.venue }}{% else %}Скоро в {{ city_in }}{% endif %}</h2>
+    {% with items = more_here %}{% include "related.html" %}{% endwith %}
+  </section>
+  {% endif %}
+
+  <p class="back"><a href="/{{ city.slug }}/">Все события в {{ city_in }}</a></p>
+</main>
+{% endblock %}

@@ -1,8 +1,8 @@
 """
 ### process_events — из сырых постов в каталог событий
 
-Запускается сам, когда `ingest_vk` или `ingest_tg` публикует Asset
-`raw_vk_posts` или `raw_tg_posts`.
+Запускается сам, когда `ingest_vk`, `ingest_tg` или `ingest_sites` публикует
+Asset `raw_vk_posts`, `raw_tg_posts` или `raw_site_events`.
 
 1. **extract_events** — новые и изменённые посты обеих платформ за последние
    30 дней (вместе с текстом репоста VK или цитатой ответа в Telegram)
@@ -12,15 +12,18 @@
    с того места, где упал. Если модель не ответила за 2 минуты, пост
    получает статус `timeout` и перепрогоняется в следующем запуске,
    а остальные посты обрабатываются дальше.
-2. **validate_quality** — проверяет новые строки `staging.events`: без
+2. **load_site_events** — показы с сайтов площадок переносит в `staging.events`
+   как упоминания: они уже структурированы, LLM не нужна. Идёт параллельно
+   с извлечением из постов.
+3. **validate_quality** — проверяет новые строки `staging.events`: без
    названия, без даты, дата раньше публикации или больше чем на год вперёд →
    `quarantine_reason`. Категория не из `meta.categories` → `other`.
-3. **resolve_venues** — привязывает текст места к площадке из справочника
+4. **resolve_venues** — привязывает текст места к площадке из справочника
    `sources/venues/<город>.yaml` («ОЦКиНТ» и «Центр культуры, народного
    творчества и кино» — одна площадка). У пабликов самих площадок
    «малый зал» и пустое место → площадка паблика. Что не нашлось —
    в `staging.unmatched_venues`.
-4. **dedupe_events** — склеивает упоминания в `catalog.events`: тот же город
+5. **dedupe_events** — склеивает упоминания в `catalog.events`: тот же город
    и дата, совместимое время, похожее название. Разные площадки — разные
    события, одна площадка — порог похожести названий ниже. Сравнивает и с
    событиями прошлых запусков. Если каталог изменился, публикует Asset
@@ -44,9 +47,9 @@ import pendulum
 from airflow.sdk import Connection, Param, Variable, dag, get_current_context, task
 from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
-from funfinder.assets import CATALOG_EVENTS, RAW_TG_POSTS, RAW_VK_POSTS
+from funfinder.assets import CATALOG_EVENTS, RAW_SITE_EVENTS, RAW_TG_POSTS, RAW_VK_POSTS
 from funfinder.db import connect
-from funfinder.events import dedupe, extract, validate, venues
+from funfinder.events import dedupe, extract, site_events, validate, venues
 from funfinder.events.llm import LLMClient, LLMConfigError
 
 log = logging.getLogger(__name__)
@@ -61,7 +64,7 @@ def _connect():
 
 @dag(
     dag_id="process_events",
-    schedule=(RAW_VK_POSTS | RAW_TG_POSTS),  # по событию: любая платформа загрузила новые или изменённые посты
+    schedule=(RAW_VK_POSTS | RAW_TG_POSTS | RAW_SITE_EVENTS),  # по событию: любой источник принёс новое
     start_date=pendulum.datetime(2026, 11, 1, tz="Europe/Moscow"),
     catchup=False,
     max_active_runs=1,  # два запуска одновременно склеивали бы одни и те же строки
@@ -110,6 +113,11 @@ def process_events():
         return stats
 
     @task
+    def load_site_events() -> dict:
+        with closing(_connect()) as conn:
+            return site_events.run(conn)
+
+    @task
     def validate_quality() -> dict:
         with closing(_connect()) as conn:
             stats = validate.run(conn)
@@ -139,7 +147,7 @@ def process_events():
         ctx["outlet_events"][CATALOG_EVENTS].extra = stats
         return stats
 
-    extract_events() >> validate_quality() >> resolve_venues() >> dedupe_events()
+    [extract_events(), load_site_events()] >> validate_quality() >> resolve_venues() >> dedupe_events()
 
 
 process_events()

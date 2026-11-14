@@ -1,8 +1,8 @@
 """Список источников и площадок: файлы sources/<город>.yaml и
 sources/venues/<город>.yaml → таблицы meta.cities, meta.sources, meta.venues.
 
-Источники — по разделам платформ: vk: (сообщества VK) и tg: (публичные
-каналы Telegram).
+Источники — по разделам платформ: vk: (сообщества VK), tg: (публичные
+каналы Telegram) и sites: (сайты площадок с разбором афиши в funfinder/sites/).
 
 Файл — источник правды: добавили паблик в yaml, на следующем запуске он
 появится в базе. Убрали из yaml — источник станет неактивным (is_active =
@@ -20,6 +20,7 @@ import yaml
 from psycopg2.extras import Json
 
 from funfinder.events.venues import is_generic, venue_tokens
+from funfinder.sites.ingest import SiteSettings, normalize_domain
 from funfinder.tg.ingest import TGSettings, normalize_channel
 from funfinder.vk.ingest import IngestSettings, normalize_handle
 
@@ -54,16 +55,18 @@ class CityConfig:
     language: str = "ru"
     vk: tuple[SourceConfig, ...] = ()
     tg: tuple[SourceConfig, ...] = ()
+    site: tuple[SourceConfig, ...] = ()
     venues: tuple[VenueConfig, ...] = ()
 
     def sources(self, platform: str) -> tuple[SourceConfig, ...]:
         return getattr(self, platform)
 
 
-# Платформа → (как привести имя к одному виду, класс настроек загрузки).
+# Платформа → (раздел в yaml, как привести имя к одному виду, класс настроек загрузки).
 PLATFORMS = {
-    "vk": (normalize_handle, IngestSettings),
-    "tg": (normalize_channel, TGSettings),
+    "vk": ("vk", normalize_handle, IngestSettings),
+    "tg": ("tg", normalize_channel, TGSettings),
+    "site": ("sites", normalize_domain, SiteSettings),
 }
 
 
@@ -143,7 +146,8 @@ def load_city_config(path: Path) -> CityConfig:
     venue_slugs = {v.slug for v in venues}
 
     by_platform = {
-        platform: _load_sources(path, data.get(platform) or [], platform, venue_slugs) for platform in PLATFORMS
+        platform: _load_sources(path, data.get(section) or [], section, platform, venue_slugs)
+        for platform, (section, _, _) in PLATFORMS.items()
     }
     return CityConfig(
         slug=slug,
@@ -155,11 +159,13 @@ def load_city_config(path: Path) -> CityConfig:
     )
 
 
-def _load_sources(path: Path, items: list, platform: str, venue_slugs: set[str]) -> tuple[SourceConfig, ...]:
-    normalize, settings_cls = PLATFORMS[platform]
+def _load_sources(
+    path: Path, items: list, section: str, platform: str, venue_slugs: set[str]
+) -> tuple[SourceConfig, ...]:
+    _, normalize, settings_cls = PLATFORMS[platform]
     result: list[SourceConfig] = []
     for i, item in enumerate(items):
-        where = f"{path.name}: {platform}[{i}]"
+        where = f"{path.name}: {section}[{i}]"
         if not isinstance(item, dict) or not item.get("handle"):
             raise SourcesConfigError(f"{where} — нужен как минимум handle")
         try:
@@ -241,6 +247,7 @@ def sync_city(conn, cfg: CityConfig) -> dict:
         "city": cfg.slug,
         "vk_sources": len(cfg.vk),
         "tg_sources": len(cfg.tg),
+        "site_sources": len(cfg.site),
         "deactivated": deactivated,
         "venues": len(cfg.venues),
     }

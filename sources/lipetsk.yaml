@@ -53,3 +53,16 @@ tg:
 - handle: sinitsabar
   note: Бар «Синица»
   venue: sinitsa
+
+# Сайты площадок: афиша разбирается кодом из funfinder/sites/, без LLM.
+# handle — домен; разбор для него должен быть в funfinder/sites/__init__.py.
+# venue — площадка всех показов, settings.category — категория.
+sites:
+- handle: teatr-tolstogo.ru
+  note: Театр драмы им. Толстого — страница афиши
+  venue: teatr-dramy
+  settings: {category: theatre}
+- handle: teatr48.ru
+  note: Театр «На Соколе» — календарь на главной
+  venue: teatr-na-sokole
+  settings: {category: theatre}

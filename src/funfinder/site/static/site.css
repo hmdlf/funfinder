@@ -450,3 +450,127 @@ h1 {
     font-size: 1rem;
   }
 }
+
+/* --- Страница события --- */
+
+.crumbs {
+  display: flex;
+  gap: 0.45rem;
+  margin-top: 1rem;
+  color: var(--sage);
+  font-size: 0.9375rem;
+}
+
+.crumbs a {
+  color: var(--sage);
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  color: var(--ink);
+}
+
+.event-page h1 {
+  max-width: 22ch;
+  margin-top: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.event-status-line {
+  margin: 0 0 0.5rem;
+  color: var(--alert);
+  font-weight: 600;
+}
+
+.event-page.is-cancelled h1,
+.event-page.is-postponed h1 {
+  color: var(--sage);
+  text-decoration: line-through;
+  text-decoration-color: var(--alert);
+  text-decoration-thickness: 0.06em;
+}
+
+.facts {
+  margin: 1.2rem 0 1rem;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: 4.2rem 1fr;
+  gap: 0.75rem;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.facts > div:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.facts dt {
+  color: var(--sage);
+  font-size: 0.875rem;
+  padding-top: 0.12rem;
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fact-note {
+  color: var(--sage);
+}
+
+.sources {
+  margin: 0 0 0.5rem;
+}
+
+.sources a {
+  font-weight: 600;
+  text-decoration-color: var(--blossom);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.22em;
+}
+
+.related {
+  margin-top: 2rem;
+}
+
+.related h2 {
+  margin: 0 0 0.6rem;
+  font: 700 1.25rem/1.2 "Podkova", Georgia, serif;
+  overflow-wrap: anywhere;
+}
+
+.related-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.related-list li {
+  padding: 0.35rem 0;
+}
+
+.related-list a {
+  font-weight: 600;
+  text-decoration-color: var(--line);
+  text-underline-offset: 0.22em;
+  overflow-wrap: anywhere;
+}
+
+.related-list .is-cancelled a,
+.related-list .is-postponed a {
+  color: var(--sage);
+  text-decoration-line: line-through;
+}
+
+.related-when {
+  display: block;
+  color: var(--sage);
+  font-size: 0.875rem;
+}
+
+.back {
+  margin-top: 2rem;
+}

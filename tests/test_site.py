@@ -8,10 +8,13 @@ from zoneinfo import ZoneInfo
 import paramiko
 import pytest
 
+from funfinder.events.dedupe import norm_title
 from funfinder.site import build, deploy
 from funfinder.site.build import Event
+from funfinder.site.pages import PageRow
 
 MSK = ZoneInfo("Europe/Moscow")
+MSK_NOW = datetime(2026, 11, 13, 21, 15, tzinfo=MSK)
 CITY = {"city_id": 1, "slug": "lipetsk", "name": "Липецк", "timezone": "Europe/Moscow"}
 CATEGORIES = {"concert": "Концерты", "theatre": "Театр", "classes": "Занятия и кружки", "other": "Другое"}
 
@@ -113,7 +116,11 @@ def site(tmp_path):
 
 def test_render_writes_city_category_and_service_pages(site):
     out, stats = site
-    assert stats == {"pages": 4, "events": 3}  # город + концерты, театр, занятия
+    assert stats == {
+        "pages": 4,
+        "events": 3,
+        "event_pages": 3,
+    }  # город + концерты, театр, занятия; по странице на событие
     for path in ("index.html", "404.html", "robots.txt", "sitemap.xml", "assets/site.css", "assets/site.js"):
         assert (out / path).exists(), path
     assert (out / "assets/fonts/podkova-cyrillic-wght-normal.woff2").exists()
@@ -144,10 +151,65 @@ def test_category_page(site):
     assert '<link rel="canonical" href="https://matingu.com/lipetsk/classes/">' in html
 
 
+def test_event_page(tmp_path):
+    day = date(2026, 11, 14)
+    here = {"venue": "Бар «Синица»", "venue_slug": "sinitsa", "address": "ул. Фрунзе, 8"}
+    events = [
+        event(
+            1,
+            day,
+            time(20),
+            category="other",
+            title="Киноклуб: Престиж",
+            price="вход свободный",
+            urls=["https://t.me/sinitsabar/2674", "https://vk.com/wall-1_1", "https://vk.com/wall-1_2"],
+            **here,
+        ),
+        event(2, date(2026, 11, 19), time(20), category="other", title="Мгла", **here),
+        event(3, day, None, title="Концерт в филармонии", venue="Филармония", venue_slug="filarmoniya"),
+    ]
+    # Два адреса из прошлых сборок: событие тогда было записано дважды, теперь склеилось в одно.
+    first = PageRow(
+        "2026-11-14-kinoklub-prestizh",
+        day,
+        "Киноклуб: Престиж",
+        norm_title("Киноклуб: Престиж"),
+        created_at=MSK_NOW - timedelta(days=1),
+    )
+    old = PageRow(
+        "2026-11-14-prestizh-kinoklub", day, "Престиж. Киноклуб", norm_title("Престиж. Киноклуб"), created_at=MSK_NOW
+    )
+    rows = {"lipetsk": [first, old]}
+    stats = build.render(
+        tmp_path, [CITY], CATEGORIES, {"lipetsk": events}, site_url="https://matingu.com", now=MSK_NOW, page_rows=rows
+    )
+    assert stats["event_pages"] == 4  # три события + перенаправление со склеенного адреса
+
+    html = page(tmp_path, "lipetsk/events/2026-11-14-kinoklub-prestizh")
+    assert "<h1>Киноклуб: Престиж</h1>" in html
+    assert (
+        "суббота, 14 ноября, 20:00" in html and "ул.\u00a0Фрунзе, 8" not in html
+    )  # адрес как есть: склейку пробелов делает load
+    assert '>Telegram</a>, <a href="https://vk.com/wall-1_1" target="_blank" rel="noopener">VK 1</a>' in html
+    assert "Ещё здесь: Бар «Синица»" in html and 'href="/lipetsk/events/2026-11-19-mgla/">Мгла</a>' in html
+    assert "В этот же день" in html and "Концерт в филармонии" in html
+    assert '<link rel="canonical" href="https://matingu.com/lipetsk/events/2026-11-14-kinoklub-prestizh/">' in html
+    item = json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', html).group(1))["@graph"][0]
+    assert item["url"] == "https://matingu.com/lipetsk/events/2026-11-14-kinoklub-prestizh/"  # не пост, а эта страница
+
+    redirect = page(tmp_path, "lipetsk/events/2026-11-14-prestizh-kinoklub")
+    target = "https://matingu.com/lipetsk/events/2026-11-14-kinoklub-prestizh/"
+    assert f'http-equiv="refresh" content="0; url={target}"' in redirect
+    assert 'name="robots" content="noindex"' in redirect
+
+
 def test_sitemap_and_robots(site):
     out, _ = site
     sitemap = (out / "sitemap.xml").read_text(encoding="utf-8")
-    assert sitemap.count("<loc>") == 4 and "<loc>https://matingu.com/lipetsk/theatre/</loc>" in sitemap
+    assert (
+        sitemap.count("<loc>") == 7 and "<loc>https://matingu.com/lipetsk/theatre/</loc>" in sitemap
+    )  # 4 списка + 3 события
+    assert "<loc>https://matingu.com/lipetsk/events/2026-11-14-tango-gruppa-b/</loc>" in sitemap
     assert "Sitemap: https://matingu.com/sitemap.xml" in (out / "robots.txt").read_text(encoding="utf-8")
     assert 'url=/lipetsk/"' in (out / "index.html").read_text(encoding="utf-8")
 
@@ -155,39 +217,79 @@ def test_sitemap_and_robots(site):
 # --- Сборка из базы ---
 
 
-def test_run_builds_from_catalog(conn, lipetsk, tmp_path):
-    soon = date.today() + timedelta(days=3)
+def add_catalog_events(conn, source, rows):
+    """rows — (название, дата, время, место); у каждого события одно упоминание с постом VK."""
     with conn, conn.cursor() as cur:
         cur.execute("SELECT city_id FROM meta.cities WHERE slug = 'lipetsk'")
         city_id = cur.fetchone()[0]
-        cur.execute(
-            """
-            INSERT INTO catalog.events (city_id, title, title_norm, event_date, event_time, venue, category)
-            VALUES (%s, 'Обыкновенное чудо', 'обыкн чудо', %s, '19:00', 'Театр драмы', 'theatre'),
-                   (%s, 'Без места и времени', 'без места', %s, NULL, NULL, 'other')
-            RETURNING event_id
-            """,
-            (city_id, soon, city_id, soon),
-        )
-        for (event_id,) in cur.fetchall():
+        ids = []
+        for title, day, at, venue in rows:
+            cur.execute(
+                """
+                INSERT INTO catalog.events (city_id, title, title_norm, event_date, event_time, venue, category)
+                VALUES (%s, %s, %s, %s, %s, %s, 'theatre') RETURNING event_id
+                """,
+                (city_id, title, norm_title(title), day, at, venue),
+            )
+            event_id = cur.fetchone()[0]
+            ids.append(event_id)
             cur.execute(
                 """
                 INSERT INTO staging.events (source_id, city_id, post_id, source_url, published_at,
                                             title, event_date, validated, event_id)
-                VALUES (%s, %s, %s, %s, now(), 'x', %s, true, %s)
+                VALUES (%s, %s, %s, %s, now(), %s, %s, true, %s)
                 """,
-                (lipetsk["source_id"], city_id, event_id, f"https://vk.com/wall-1_{event_id}", soon, event_id),
+                (source["source_id"], city_id, event_id, f"https://vk.com/wall-1_{event_id}", title, day, event_id),
             )
+    return ids
+
+
+def clear_catalog(conn):
+    """Как пересборка каталога: события создаются заново, номера у них новые."""
+    with conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM staging.events")
+        cur.execute("DELETE FROM catalog.events")
+
+
+def test_run_builds_from_catalog(conn, lipetsk, tmp_path):
+    soon = date.today() + timedelta(days=3)
+    add_catalog_events(
+        conn, lipetsk, [("Обыкновенное чудо", soon, time(19), "Театр драмы"), ("Без места и времени", soon, None, None)]
+    )
 
     (tmp_path / "site").mkdir()
     (tmp_path / "site" / "old.html").write_text("прошлая сборка")
     stats = build.run(conn, tmp_path, site_url="https://matingu.com")
 
     html = page(tmp_path / "site", "lipetsk")
-    assert stats == {"pages": 2, "events": 1}  # событие без времени и места в витрину не попадает
-    assert "Обыкновенное чудо" in html and "https://vk.com/wall-1_" in html
+    assert stats == {"pages": 2, "events": 1, "event_pages": 1}  # событие без времени и места в витрину не попадает
+    slug = f"{soon.isoformat()}-obyknovennoe-chudo"
+    assert f'href="/lipetsk/events/{slug}/">Обыкновенное чудо</a>' in html
+    assert "https://vk.com/wall-1_" in page(tmp_path / "site", f"lipetsk/events/{slug}")  # ссылка на пост — там
     assert not (tmp_path / "site" / "old.html").exists()  # папка подменена целиком
     assert not (tmp_path / "site.new").exists()
+
+
+def test_event_urls_survive_catalog_rebuild(conn, lipetsk, tmp_path):
+    soon = date.today() + timedelta(days=3)
+    add_catalog_events(conn, lipetsk, [("Обыкновенное чудо", soon, time(19), "Театр драмы")])
+    build.run(conn, tmp_path, site_url="https://matingu.com")
+    slug = f"{soon.isoformat()}-obyknovennoe-chudo"
+
+    # Пересборка каталога: новый номер события, а название чуть другое — адрес тот же.
+    clear_catalog(conn)
+    add_catalog_events(conn, lipetsk, [("Спектакль «Обыкновенное чудо»", soon, time(19), "Театр драмы")])
+    build.run(conn, tmp_path, site_url="https://matingu.com")
+    html = page(tmp_path / "site", f"lipetsk/events/{slug}")
+    assert "<h1>Спектакль «Обыкновенное чудо»</h1>" in html
+    assert not list((tmp_path / "site/lipetsk/events").glob("*-spektakl-*"))  # нового адреса не появилось
+
+    # Событие пропало из каталога (сняли с афиши): страница остаётся, но закрыта от поиска.
+    clear_catalog(conn)
+    build.run(conn, tmp_path, site_url="https://matingu.com")
+    gone = page(tmp_path / "site", f"lipetsk/events/{slug}")
+    assert "больше нет в афише" in gone and 'content="noindex, follow"' in gone
+    assert slug not in (tmp_path / "site/sitemap.xml").read_text(encoding="utf-8")
 
 
 # --- Выкладка ---

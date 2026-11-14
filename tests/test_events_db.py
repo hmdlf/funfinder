@@ -356,8 +356,21 @@ FILARMONIYA = VenueConfig("filarmoniya", "Филармония", None, ("Уни�
 
 
 def public(conn):
+    """Что попадёт в витрину: условия catalog.events_public, кроме «дата не в прошлом».
+
+    Сама витрина сравнивает дату с сегодняшней, а даты в этих тестах — из ноября 2026:
+    через день-другой тест начал бы падать сам по себе.
+    """
     with conn, conn.cursor() as cur:
-        cur.execute("SELECT title, venue, venue_address FROM catalog.events_public ORDER BY title")
+        cur.execute(
+            """
+            SELECT e.title, coalesce(v.name, e.venue), v.address
+              FROM catalog.events e
+              LEFT JOIN meta.venues v USING (venue_id)
+             WHERE e.event_time IS NOT NULL OR e.venue IS NOT NULL OR e.venue_id IS NOT NULL
+             ORDER BY e.title
+            """
+        )
         return cur.fetchall()
 
 

@@ -44,17 +44,30 @@ def test_ingest_tg_structure(dagbag):
     assert [a.name for a in dag.get_task("emit_asset").outlets] == ["raw_tg_posts"]
 
 
+def test_ingest_sites_structure(dagbag):
+    dag = dagbag.dags["ingest_sites"]
+    assert set(dag.task_ids) == {"sync_sources", "list_sources", "fetch_site", "emit_asset", "watcher"}
+    assert dag.get_task("emit_asset").upstream_task_ids == {"fetch_site"}
+    assert [a.name for a in dag.get_task("emit_asset").outlets] == ["raw_site_events"]
+
+
 def test_process_events_runs_on_either_platform(dagbag):
     dag = dagbag.dags["process_events"]
     condition = dag.timetable.asset_condition  # AssetAny: хватит любого из двух
     assert type(condition).__name__ == "AssetAny"
-    assert {a.name for a in condition.objects} == {"raw_vk_posts", "raw_tg_posts"}
+    assert {a.name for a in condition.objects} == {"raw_vk_posts", "raw_tg_posts", "raw_site_events"}
 
 
 def test_process_events_structure(dagbag):
     dag = dagbag.dags["process_events"]
-    assert set(dag.task_ids) == {"extract_events", "validate_quality", "resolve_venues", "dedupe_events"}
-    assert dag.get_task("validate_quality").upstream_task_ids == {"extract_events"}
+    assert set(dag.task_ids) == {
+        "extract_events",
+        "load_site_events",
+        "validate_quality",
+        "resolve_venues",
+        "dedupe_events",
+    }
+    assert dag.get_task("validate_quality").upstream_task_ids == {"extract_events", "load_site_events"}
     assert dag.get_task("resolve_venues").upstream_task_ids == {"validate_quality"}
     assert dag.get_task("dedupe_events").upstream_task_ids == {"resolve_venues"}
     assert [a.name for a in dag.get_task("dedupe_events").outlets] == ["catalog_events"]

@@ -55,7 +55,7 @@
           <span class="event-time is-unknown" title="Время не указано">—<span class="visually-hidden">время не указано</span></span>
           {% endif %}
           <div class="event-body">
-            <a class="event-title" href="{{ e.url }}" target="_blank" rel="noopener">{{ e.title }}</a>
+            <a class="event-title" href="{% if e.slug %}/{{ city.slug }}/events/{{ e.slug }}/{% else %}{{ e.url }}{% endif %}">{{ e.title }}</a>
             {% if e.status_label %}<span class="event-status">{{ e.status_label }}</span>{% endif %}
             <p class="event-place">{{ e.venue or "Место уточняйте в анонсе" }}{% if e.address %}<span class="event-address">, {{ e.address }}</span>{% endif %}</p>
             {% if not current or e.price %}

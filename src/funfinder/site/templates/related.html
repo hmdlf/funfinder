@@ -1,0 +1,8 @@
+<ul class="related-list">
+  {% for e in items %}
+  <li{% if e.status != 'scheduled' %} class="is-{{ e.status }}"{% endif %}>
+    <a href="/{{ city.slug }}/events/{{ e.slug }}/">{{ e.title }}</a>
+    <span class="related-when">{{ short_date(e.day) }}{% if e.at %}, {{ e.at.strftime('%H:%M') }}{% endif %}{% if e.status_label %} · {{ e.status_label }}{% endif %}</span>
+  </li>
+  {% endfor %}
+</ul>
