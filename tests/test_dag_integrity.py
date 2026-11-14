@@ -27,6 +27,19 @@ def test_every_dag_has_tags_retries_and_no_catchup(dagbag):
         assert dag.default_args.get("retries", 0) >= 1, f"{dag_id}: нет ретраев"
 
 
+def test_only_watchers_have_no_retries(dagbag):
+    """Падать без повтора — через AirflowFailException, а не retries=0.
+
+    Иначе задачу без ретраев валит любой сбой запуска: 14.11 после включения
+    компьютера sync_sources не стартовал, и пропал целый запуск ingest_vk.
+    Без ретраев остаются только сторожа (watcher): они и так всегда падают.
+    """
+    for dag_id, dag in dagbag.dags.items():
+        for task in dag.tasks:
+            if task.retries == 0:
+                assert task.trigger_rule == "one_failed", f"{dag_id}.{task.task_id}: нет ретраев"
+
+
 def test_ingest_vk_structure(dagbag):
     dag = dagbag.dags["ingest_vk"]  # get_dag() лезет в метабазу, здесь она не нужна
     assert set(dag.task_ids) == {"sync_sources", "list_sources", "fetch_source", "emit_asset", "watcher"}
@@ -77,3 +90,15 @@ def test_build_site_structure(dagbag):
     dag = dagbag.dags["build_site"]
     assert set(dag.task_ids) == {"render_site", "deploy_site"}
     assert dag.get_task("deploy_site").upstream_task_ids == {"render_site"}
+
+
+def test_source_health_structure(dagbag):
+    dag = dagbag.dags["source_health"]
+    assert set(dag.task_ids) == {"check_sources", "alert"}
+    assert dag.get_task("alert").upstream_task_ids == {"check_sources"}
+
+
+def test_archive_structure(dagbag):
+    dag = dagbag.dags["archive"]
+    assert set(dag.task_ids) == {"archive_past", "trim_ingest_log"}
+    assert dag.get_task("archive_past").upstream_task_ids == set()  # задачи независимы

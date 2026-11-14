@@ -5,6 +5,7 @@ docker/postgres-init). Строка подключения — FUNFINDER_TEST_DS
 контейнере airflow-cli она уже задана. Без неё тесты с базой пропускаются.
 """
 
+import json
 import os
 from datetime import UTC, datetime
 
@@ -12,8 +13,11 @@ import psycopg2
 import pytest
 
 from funfinder.db.migrate import migrate
+from funfinder.events import dedupe, extract, validate, venues
+from funfinder.events.llm import LLMResult
+from funfinder.vk.ingest import IngestSettings, ingest_source
 
-SCHEMAS = ("meta", "raw", "staging", "catalog", "quarantine")
+SCHEMAS = ("meta", "raw", "staging", "catalog", "quarantine", "archive")
 
 
 @pytest.fixture(scope="session")
@@ -38,6 +42,11 @@ def conn(db_dsn):
     conn = psycopg2.connect(db_dsn)
     with conn, conn.cursor() as cur:
         cur.execute("TRUNCATE raw.vk_posts, meta.ingest_log, meta.sources, meta.cities RESTART IDENTITY CASCADE")
+        # У архива нет внешних ключей, CASCADE до него не доходит.
+        cur.execute(
+            "TRUNCATE archive.events, archive.mentions, archive.vk_posts, archive.tg_posts,"
+            " archive.post_extractions, archive.site_events, archive.event_pages"
+        )
     yield conn
     conn.close()
 
@@ -100,3 +109,58 @@ class FakeVK:
     def get_group(self, handle):
         self.calls.append(("groups.getById", handle))
         return self.group
+
+
+# --- process_events без LLM: общие помощники тестов с базой ---
+
+SETTINGS = IngestSettings(page_size=50, initial_lookback_days=30, recheck_days=3)
+
+
+class FakeLLM:
+    """Вместо LLM: отвечает заранее заданными событиями по ключевой фразе в посте."""
+
+    def __init__(self, answers: dict):
+        self.answers = answers  # фраза в посте → события, "REFUSED", "INVALID" или "TIMEOUT"
+        self.messages: list[str] = []
+
+    @property
+    def calls(self) -> int:
+        return len(self.messages)
+
+    def extract(self, system_prompt: str, user_message: str) -> LLMResult:
+        self.messages.append(user_message)
+        for key, answer in self.answers.items():
+            if key in user_message:
+                if answer == "REFUSED":
+                    return LLMResult(status="refused")
+                if answer == "TIMEOUT":
+                    return LLMResult(status="timeout")
+                if answer == "INVALID":
+                    return LLMResult(status="invalid_json", model="fake", raw_answer='{"events": [}')
+                raw = json.dumps({"events": answer}, ensure_ascii=False)
+                return LLMResult(status="ok", model="fake", events=answer, raw_answer=raw, tokens_in=100)
+        return LLMResult(status="ok", model="fake", raw_answer='{"events": []}')
+
+
+def ev(title, day, at=None, venue=None, category="quiz", status="scheduled"):
+    """Событие так, как его вернула бы модель."""
+    return {
+        "title": title,
+        "date": day,
+        "time": at,
+        "venue": venue,
+        "price": None,
+        "category": category,
+        "status": status,
+    }
+
+
+def load(conn, source, posts, run_id="run_1"):
+    ingest_source(FakeVK(posts), conn, source, run_id=run_id, settings=SETTINGS, now=NOW)
+
+
+def pipeline(conn, llm):
+    """Как process_events: extract → validate → resolve_venues → dedupe."""
+    extracted, validated = extract.run(conn, llm, now=NOW), validate.run(conn)
+    venues.run(conn)
+    return extracted, validated, dedupe.run(conn)

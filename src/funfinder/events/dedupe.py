@@ -24,6 +24,8 @@ from collections import Counter
 
 from rapidfuzz import fuzz
 
+from funfinder.db import lock_catalog
+
 log = logging.getLogger(__name__)
 
 THRESHOLD = 80  # порог похожести названий, 0..100
@@ -130,6 +132,7 @@ def run(conn, *, rebuild: bool = False) -> dict:
     candidates: dict[tuple, list[dict]] = {}  # (city_id, date) → события каталога
 
     with conn, conn.cursor() as cur:  # одна транзакция: упадёт — ничего не склеится наполовину
+        lock_catalog(cur)  # архив в это время не уносит события
         if rebuild:
             # В той же транзакции, что и склейка: читатели витрины не увидят пустой каталог.
             cur.execute("UPDATE staging.events SET event_id = NULL WHERE event_id IS NOT NULL")

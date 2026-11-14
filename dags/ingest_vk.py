@@ -58,7 +58,11 @@ def _connect():
     doc_md=__doc__,
 )
 def ingest_vk():
-    @task(retries=0)
+    # Ретраи нужны и здесь. Ошибка в yaml и так падает сразу (AirflowFailException), а повтор
+    # спасает от сбоя запуска: 14.11 после включения компьютера задача не стартовала вовсе
+    # («executor reported ... failed, but the task instance's state attribute is queued»),
+    # и без ретраев пропал весь утренний запуск ingest_vk.
+    @task
     def sync_sources() -> list[dict]:
         try:
             configs = sources.load_all()
@@ -139,7 +143,10 @@ def ingest_vk():
 
     @task(trigger_rule=TriggerRule.ONE_FAILED, retries=0)
     def watcher() -> None:
-        raise AirflowFailException("Часть задач упала. Подробности — в логах fetch_source и в meta.ingest_log.")
+        raise AirflowFailException(
+            "Часть задач упала: смотрите задачи этого запуска в статусе failed. "
+            "Ошибки загрузки по источникам — ещё и в логах fetch_source и в meta.ingest_log."
+        )
 
     synced = sync_sources()
     listed = list_sources()
