@@ -118,6 +118,7 @@ vk:
 VENUES = """
 - slug: atmosfera
   name: Культ-клуб «Атмосфера»
+  short: «Атмосфера»
   address: ул. Фрунзе, 1
   aliases: [Атмосфера]
 - slug: dacha
@@ -144,6 +145,7 @@ def test_city_without_venues_file(tmp_path):
         (VENUES + "- {slug: other, name: Клуб, aliases: [Атмосфера]}", CITY),  # вариант у двух площадок
         (VENUES + "- {slug: other, name: Клуб, aliases: [малый зал]}", CITY),  # вариант ничего не называет
         (VENUES + "- {slug: other, name: Клуб, phone: 123}", CITY),  # опечатка в поле
+        (VENUES + "- {slug: other, name: Клуб, short: Очень длинное короткое имя площадки}", CITY),
         (VENUES, CITY.replace("venue: atmosfera", "venue: nowhere")),  # нет такой площадки
         ("slug: atmosfera", CITY),  # не список
     ],
@@ -178,6 +180,10 @@ def test_sync_venues_and_source_defaults(conn, tmp_path):
     cfg = load_city_config(write(tmp_path / "lipetsk.yaml", CITY))
     assert sync_city(conn, cfg)["venues"] == 2
     sync_city(conn, cfg)  # повтор ничего не ломает
+    assert [v.short for v in cfg.venues] == ["«Атмосфера»", None]
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT slug, short_name FROM meta.venues ORDER BY slug")
+        assert cur.fetchall() == [("atmosfera", "«Атмосфера»"), ("dacha", None)]
     assert venues_in_db(conn) == (
         [("atmosfera", "ул. Фрунзе, 1", ["Атмосфера"]), ("dacha", None, None)],
         [("club1", "atmosfera"), ("club2", None)],

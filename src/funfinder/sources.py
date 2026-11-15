@@ -1,8 +1,10 @@
-"""Список источников и площадок: файлы sources/<город>.yaml и
-sources/venues/<город>.yaml → таблицы meta.cities, meta.sources, meta.venues.
+"""Список источников, площадок и мест публикации: файлы sources/<город>.yaml и
+sources/venues/<город>.yaml → таблицы meta.cities, meta.sources, meta.venues,
+meta.publish_targets.
 
 Источники — по разделам платформ: vk: (сообщества VK), tg: (публичные
 каналы Telegram) и sites: (сайты площадок с разбором афиши в funfinder/sites/).
+Раздел publish: — куда DAG publish отправляет подборку «Завтра в <городе>».
 
 Файл — источник правды: добавили паблик в yaml, на следующем запуске он
 появится в базе. Убрали из yaml — источник станет неактивным (is_active =
@@ -20,11 +22,13 @@ import yaml
 from psycopg2.extras import Json
 
 from funfinder.events.venues import is_generic, venue_tokens
+from funfinder.publish.digest import DigestSettings
 from funfinder.sites.ingest import SiteSettings, normalize_domain
 from funfinder.tg.ingest import TGSettings, normalize_channel
 from funfinder.vk.ingest import IngestSettings, normalize_handle
 
 SLUG_RE = re.compile(r"^[a-z0-9-]+$")
+SHORT_NAME_LIMIT = 30
 
 
 class SourcesConfigError(ValueError):
@@ -45,6 +49,15 @@ class VenueConfig:
     name: str
     address: str | None = None
     aliases: tuple[str, ...] = ()
+    short: str | None = None  # для подборок в каналах: «Буксир»
+
+
+@dataclass(frozen=True)
+class PublishConfig:
+    platform: str  # tg
+    handle: str  # @канал или числовой id чата
+    note: str | None = None
+    settings: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -57,6 +70,7 @@ class CityConfig:
     tg: tuple[SourceConfig, ...] = ()
     site: tuple[SourceConfig, ...] = ()
     venues: tuple[VenueConfig, ...] = ()
+    publish: tuple[PublishConfig, ...] = ()
 
     def sources(self, platform: str) -> tuple[SourceConfig, ...]:
         return getattr(self, platform)
@@ -68,6 +82,24 @@ PLATFORMS = {
     "tg": ("tg", normalize_channel, TGSettings),
     "site": ("sites", normalize_domain, SiteSettings),
 }
+
+
+# Где публикуем подборки. VK — когда будет токен с доступом к стене (см. README, «Подборка»).
+PUBLISH_PLATFORMS = ("tg",)
+_TG_CHAT_RE = re.compile(r"^(@[A-Za-z][A-Za-z0-9_]{3,31}|-?\d+)$")
+
+
+def normalize_tg_chat(raw: str) -> str:
+    """'https://t.me/matingu_test' или 'matingu_test' → '@matingu_test'; числовой id — как есть."""
+    chat = raw.strip()
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if chat.lower().startswith(prefix):
+            chat = chat[len(prefix) :].strip("/")
+    if not chat.startswith("@") and not chat.lstrip("-").isdigit():
+        chat = f"@{chat}"
+    if not _TG_CHAT_RE.match(chat):
+        raise ValueError(f"не похоже на канал Telegram: {raw!r} (нужно @имя или числовой id)")
+    return chat
 
 
 def sources_dir() -> Path:
@@ -100,10 +132,15 @@ def load_venues(path: Path) -> tuple[VenueConfig, ...]:
             raise SourcesConfigError(f"{where}: slug {slug!r} должен состоять из a-z, 0-9 и дефиса")
         if any(v.slug == slug for v in venues):
             raise SourcesConfigError(f"{where}: площадка {slug} указана дважды")
-        unknown = set(item) - {"slug", "name", "address", "aliases"}
+        unknown = set(item) - {"slug", "name", "address", "aliases", "short"}
         if unknown:
             raise SourcesConfigError(f"{where}: {slug}: неизвестные поля {sorted(unknown)}")
         aliases = tuple(str(a) for a in (item.get("aliases") or []))
+        short = str(item["short"]).strip() if item.get("short") else None
+        if short and len(short) > SHORT_NAME_LIMIT:
+            raise SourcesConfigError(
+                f"{where}: {slug}: short длиннее {SHORT_NAME_LIMIT} символов — это уже не короткое имя"
+            )
 
         for variant in (item["name"], *aliases):
             if is_generic(variant):
@@ -122,6 +159,7 @@ def load_venues(path: Path) -> tuple[VenueConfig, ...]:
                 name=str(item["name"]),
                 address=str(item["address"]) if item.get("address") else None,
                 aliases=aliases,
+                short=short,
             )
         )
     return tuple(venues)
@@ -155,8 +193,31 @@ def load_city_config(path: Path) -> CityConfig:
         timezone=tz,
         language=city.get("language", "ru"),
         venues=venues,
+        publish=_load_publish(path, data.get("publish") or []),
         **by_platform,
     )
+
+
+def _load_publish(path: Path, items: list) -> tuple[PublishConfig, ...]:
+    result: list[PublishConfig] = []
+    for i, item in enumerate(items):
+        where = f"{path.name}: publish[{i}]"
+        if not isinstance(item, dict) or not item.get("platform") or not item.get("chat"):
+            raise SourcesConfigError(f"{where} — нужны platform и chat")
+        platform = item["platform"]
+        if platform not in PUBLISH_PLATFORMS:
+            raise SourcesConfigError(
+                f"{where}: публикация в {platform!r} пока не подключена, можно: {', '.join(PUBLISH_PLATFORMS)}"
+            )
+        try:
+            handle = normalize_tg_chat(str(item["chat"]))
+            DigestSettings.from_overrides(item.get("settings"))  # проверяем ключи заранее
+        except ValueError as exc:
+            raise SourcesConfigError(f"{where}: {exc}") from exc
+        if any(t.platform == platform and t.handle == handle for t in result):
+            raise SourcesConfigError(f"{path.name}: место публикации {handle} указано дважды")
+        result.append(PublishConfig(platform, handle, item.get("note"), item.get("settings") or {}))
+    return tuple(result)
 
 
 def _load_sources(
@@ -243,6 +304,30 @@ def sync_city(conn, cfg: CityConfig) -> dict:
             )
             deactivated += cur.rowcount
 
+        for target in cfg.publish:
+            cur.execute(
+                """
+                INSERT INTO meta.publish_targets (city_id, platform, handle, note, settings)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (platform, handle) DO UPDATE
+                   SET city_id = EXCLUDED.city_id,
+                       note = EXCLUDED.note,
+                       settings = EXCLUDED.settings,
+                       is_active = true,
+                       updated_at = now()
+                """,
+                (city_id, target.platform, target.handle, target.note, Json(target.settings)),
+            )
+        cur.execute(
+            """
+            UPDATE meta.publish_targets
+               SET is_active = false, updated_at = now()
+             WHERE city_id = %s AND is_active
+               AND NOT ((platform || ' ' || handle) = ANY(%s))
+            """,
+            (city_id, [f"{t.platform} {t.handle}" for t in cfg.publish]),
+        )
+
     return {
         "city": cfg.slug,
         "vk_sources": len(cfg.vk),
@@ -250,6 +335,7 @@ def sync_city(conn, cfg: CityConfig) -> dict:
         "site_sources": len(cfg.site),
         "deactivated": deactivated,
         "venues": len(cfg.venues),
+        "publish_targets": len(cfg.publish),
     }
 
 
@@ -259,15 +345,16 @@ def _sync_venues(cur, city_id: int, venues: tuple[VenueConfig, ...]) -> dict[str
     for v in venues:
         cur.execute(
             """
-            INSERT INTO meta.venues (city_id, slug, name, address)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO meta.venues (city_id, slug, name, address, short_name)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (city_id, slug) DO UPDATE
                SET name = EXCLUDED.name,
                    address = EXCLUDED.address,
+                   short_name = EXCLUDED.short_name,
                    updated_at = now()
             RETURNING venue_id
             """,
-            (city_id, v.slug, v.name, v.address),
+            (city_id, v.slug, v.name, v.address, v.short),
         )
         venue_ids[v.slug] = cur.fetchone()[0]
 

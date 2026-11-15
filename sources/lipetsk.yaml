@@ -66,3 +66,12 @@ sites:
   note: Театр «На Соколе» — календарь на главной
   venue: teatr-na-sokole
   settings: {category: theatre}
+
+
+# Куда публиковать подборку «Завтра в Липецке» (DAG publish, каждый вечер).
+# chat — @имя канала или его числовой id (-100…); бот должен быть админом.
+# settings.exclude_categories — какие категории не включать, по умолчанию [classes].
+publish:
+- platform: tg
+  chat: "@matingu_events"
+  note: Тестовый канал

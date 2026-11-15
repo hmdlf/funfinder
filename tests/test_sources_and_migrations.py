@@ -59,6 +59,7 @@ def test_sync_is_idempotent_and_deactivates_removed(conn, tmp_path):
         "site_sources": 0,
         "deactivated": 0,
         "venues": 0,
+        "publish_targets": 0,
     }
     assert sync_city(conn, cfg)["deactivated"] == 0
 

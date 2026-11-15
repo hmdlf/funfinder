@@ -102,3 +102,11 @@ def test_archive_structure(dagbag):
     dag = dagbag.dags["archive"]
     assert set(dag.task_ids) == {"archive_past", "trim_ingest_log"}
     assert dag.get_task("archive_past").upstream_task_ids == set()  # задачи независимы
+
+
+def test_publish_structure(dagbag):
+    dag = dagbag.dags["publish"]
+    assert set(dag.task_ids) == {"sync_targets", "list_targets", "publish_digest", "watcher"}
+    assert dag.get_task("list_targets").upstream_task_ids == {"sync_targets"}
+    assert dag.get_task("publish_digest").upstream_task_ids == {"list_targets"}
+    assert set(dag.params) == {"issue_date", "force"}

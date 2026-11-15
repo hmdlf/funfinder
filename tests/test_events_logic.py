@@ -105,6 +105,18 @@ def test_title_score(a, b, same):
     assert (title_score(norm_title(a), norm_title(b)) >= 80) is same
 
 
+def test_one_word_title_merges_only_at_the_same_place_and_time():
+    from funfinder.events.dedupe import find_match
+
+    short, long_ = norm_title("Онегин"), norm_title("«Онегин» А.С. Пушкин")
+    assert title_score(short, long_) < 70  # одно слово — строго: так «вау» не прилипает ко всему
+    onegin = [{"event_id": 1, "title_norm": short, "time": time(19), "venue_id": 7}]
+    assert find_match(onegin, long_, time(19), 7)[0] is not None  # тот же театр, те же 19:00
+    assert find_match(onegin, long_, time(19, 30), 7)[0] is None  # время другое
+    assert find_match(onegin, long_, None, 7)[0] is None  # время неизвестно
+    assert find_match(onegin, long_, time(19), None)[0] is None  # площадка неизвестна
+
+
 def test_times_compatible():
     assert times_compatible(None, time(19, 0))
     assert times_compatible(time(19, 0), time(19, 1))  # Прачечная пишет 19:01, перепост — 19:00

@@ -13,6 +13,11 @@
 ниже (SAME_VENUE_THRESHOLD), потому что совпадение даты, времени и места
 уже само по себе сильный признак.
 
+Название из одного слова обычно сравнивается строго: «вау» входит во всё
+подряд. Но если у обоих одна площадка и ровно одно время, «Онегин» и
+«"Онегин" А. С. Пушкин» — один спектакль: тогда достаточно, чтобы короткое
+название целиком входило в длинное.
+
 rebuild=True пересобирает каталог с нуля из staging.events — без вызовов LLM.
 Нужно после смены правил склейки: старые события каталога были склеены
 по старым правилам, и их title_norm посчитан по-старому.
@@ -48,10 +53,11 @@ def norm_title(title: str | None) -> str:
     return " ".join(word[:STEM_LEN] for word in t.split())  # без окончаний: падежи не мешают
 
 
-def title_score(a: str, b: str) -> float:
+def title_score(a: str, b: str, *, same_place_and_time: bool = False) -> float:
     # token_set_ratio даёт 100, если одно название целиком входит в другое.
-    # Для названий из одного слова («вау») это опасно, поэтому их сравниваем строго.
-    if min(len(a.split()), len(b.split())) < 2:
+    # Для названий из одного слова («вау») это опасно, поэтому их сравниваем строго —
+    # кроме случая, когда площадка и время совпадают: там вхождение уже не случайно.
+    if min(len(a.split()), len(b.split())) < 2 and not same_place_and_time:
         return fuzz.ratio(a, b)
     return fuzz.token_set_ratio(a, b)
 
@@ -77,7 +83,8 @@ def find_match(candidates: list[dict], tnorm: str, event_time, venue_id: int | N
         threshold = required_score(c["venue_id"], venue_id)
         if threshold is None or not times_compatible(c["time"], event_time):
             continue
-        score = title_score(c["title_norm"], tnorm)
+        same = venue_id is not None and c["venue_id"] == venue_id and event_time is not None and c["time"] == event_time
+        score = title_score(c["title_norm"], tnorm, same_place_and_time=same)
         if score >= threshold:
             return c, score
     return None, 0.0
