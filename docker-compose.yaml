@@ -178,6 +178,9 @@ services:
     environment:
       <<: *airflow-common-env
       FUNFINDER_TEST_DSN: postgresql://${FUNFINDER_DB_USER}:${FUNFINDER_DB_PASSWORD}@postgres:5432/funfinder_test
+      # Вход в VK ID для публикации в сообщество: python -m funfinder.publish.vk_auth.
+      VK_ID_CLIENT_ID: ${VK_ID_CLIENT_ID:-}
+      VK_ID_REDIRECT_URI: ${VK_ID_REDIRECT_URI:-}
     command: ["bash"]
 
 volumes:

@@ -45,6 +45,7 @@ class SiteEvent:
     day: date
     at: time | None
     url: str
+    category: str | None = None  # код из meta.categories, если сайт его указывает; None — категория сайта из yaml
 
 
 @dataclass

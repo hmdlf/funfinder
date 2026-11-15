@@ -1,6 +1,6 @@
 """Афиша сайта площадки → raw.site_events, по строке на показ.
 
-Новые и изменённые показы (название, дата, время, ссылка) записываются,
+Новые и изменённые показы (название, дата, время, ссылка, категория) записываются,
 неизменённые только отмечаются как увиденные. Показ, который был в афише и
 пропал, хотя его месяц на странице по-прежнему есть, помечается removed_at:
 его отменили или перенесли. Если показ вернётся, отметка снимается.
@@ -57,16 +57,20 @@ def normalize_domain(raw: str) -> str:
     return domain
 
 
-def content_hash(title: str, day: date, at, url: str) -> str:
-    return hashlib.sha256(f"{title}\x00{day}\x00{at}\x00{url}".encode()).hexdigest()
+def content_hash(title: str, day: date, at, url: str, category: str | None = None) -> str:
+    # Без категории — прежняя формула: у театров хэши не меняются, лишнего переноса в staging нет.
+    tail = f"\x00{category}" if category else ""
+    return hashlib.sha256(f"{title}\x00{day}\x00{at}\x00{url}{tail}".encode()).hexdigest()
 
 
 _UPSERT_SQL = """
-INSERT INTO raw.site_events (source_id, event_key, title, event_date, event_time, url, content_hash, ingest_run_id)
+INSERT INTO raw.site_events
+       (source_id, event_key, title, event_date, event_time, url, category, content_hash, ingest_run_id)
 VALUES %s
 ON CONFLICT (source_id, event_key) DO UPDATE
    SET title = EXCLUDED.title, event_date = EXCLUDED.event_date, event_time = EXCLUDED.event_time,
-       url = EXCLUDED.url, content_hash = EXCLUDED.content_hash, ingest_run_id = EXCLUDED.ingest_run_id,
+       url = EXCLUDED.url, category = EXCLUDED.category,
+       content_hash = EXCLUDED.content_hash, ingest_run_id = EXCLUDED.ingest_run_id,
        removed_at = NULL, changed_at = now(), last_seen_at = now()
  WHERE raw.site_events.content_hash IS DISTINCT FROM EXCLUDED.content_hash
     OR raw.site_events.removed_at IS NOT NULL
@@ -80,7 +84,17 @@ def save_listing(conn, source_id: int, listing: Listing, *, run_id: str, today: 
     with conn, conn.cursor() as cur:
         if listing.events:
             rows = [
-                (source_id, e.key, e.title, e.day, e.at, e.url, content_hash(e.title, e.day, e.at, e.url), run_id)
+                (
+                    source_id,
+                    e.key,
+                    e.title,
+                    e.day,
+                    e.at,
+                    e.url,
+                    e.category,
+                    content_hash(e.title, e.day, e.at, e.url, e.category),
+                    run_id,
+                )
                 for e in listing.events
             ]
             returned = execute_values(cur, _UPSERT_SQL, rows, fetch=True)

@@ -18,9 +18,12 @@
 import json
 import logging
 import shlex
+from pathlib import Path
 
+import paramiko
 import requests
 
+from funfinder.publish.errors import SendError
 from funfinder.site import deploy
 
 log = logging.getLogger(__name__)
@@ -29,10 +32,8 @@ API_URL = "https://api.telegram.org"
 TIMEOUT_S = 30
 
 
-class TelegramError(Exception):
-    def __init__(self, message: str, *, retryable: bool):
-        super().__init__(message)
-        self.retryable = retryable
+class TelegramError(SendError):
+    pass
 
 
 def _parse(status: int, body: str) -> dict:
@@ -124,6 +125,30 @@ class SSHTransport:
         self.client.close()
 
 
+def make_transport(*, via_ssh: bool, host: str | None, user: str, secrets_dir: Path):
+    """Транспорт по настройкам .env: напрямую или через сервер сайта (TG_FETCH_VIA_SSH).
+
+    Ошибки настройки (нет хоста, ключа, чужой ключ сервера) — TelegramError без
+    повтора: их чинит человек. Сетевые ошибки SSH пробрасываются как есть.
+    """
+    if not via_ssh:
+        return DirectTransport()
+    if not host:
+        raise TelegramError(
+            "TG_FETCH_VIA_SSH=true, но не задан SITE_DEPLOY_HOST — некуда подключаться", retryable=False
+        )
+    key, known_hosts = secrets_dir / "deploy_key", secrets_dir / "known_hosts"
+    for path in (key, known_hosts):
+        if not path.exists():
+            raise TelegramError(f"Нет файла secrets/{path.name} — см. README, «Сайт: сервер»", retryable=False)
+    try:
+        return SSHTransport.connect(host, user=user, key_path=key, known_hosts_path=known_hosts)
+    except paramiko.BadHostKeyException as exc:
+        raise TelegramError(f"Ключ сервера не совпадает с secrets/known_hosts: {exc}", retryable=False) from exc
+    except paramiko.AuthenticationException as exc:
+        raise TelegramError(f"Сервер не принял ключ secrets/deploy_key: {exc}", retryable=False) from exc
+
+
 class Bot:
     def __init__(self, token: str, transport):
         if not token:
@@ -139,8 +164,12 @@ class Bot:
             # Текст ошибки уходит в лог и в meta.publish_log: токена в нём быть не должно.
             raise TelegramError(str(exc).replace(self.token, "***"), retryable=exc.retryable) from None
 
-    def send(self, chat: str, html_text: str) -> str:
-        """Отправляет HTML-сообщение без превью ссылок. Возвращает id сообщения."""
+    def send(self, chat: str, html_text: str, *, key: str | None = None, link: str | None = None) -> str:
+        """Отправляет HTML-сообщение без превью ссылок. Возвращает id сообщения.
+
+        key и link — для общего интерфейса отправителей: у Bot API нет защиты от
+        дублей по ключу, а ссылка на афишу уже есть в подвале текста.
+        """
         result = self._call(
             "sendMessage",
             {
@@ -151,6 +180,23 @@ class Bot:
             },
         )
         return str(result["message_id"])
+
+    def chats(self) -> list[dict]:
+        """Кто недавно писал боту или добавил его в канал: [{id, type, name}], без повторов.
+
+        getUpdates хранит обновления сутки. Бот подборки сам обновления не читает,
+        поэтому «/start» в личке бота виден здесь, пока не истёк этот срок.
+        """
+        found: dict[int, dict] = {}
+        for update in self._call("getUpdates", {"limit": 100, "timeout": 0}):
+            for key in ("message", "edited_message", "channel_post", "my_chat_member"):
+                chat = (update.get(key) or {}).get("chat")
+                if chat:
+                    name = chat.get("title") or " ".join(filter(None, [chat.get("first_name"), chat.get("last_name")]))
+                    if chat.get("username"):
+                        name = f"{name} (@{chat['username']})".strip()
+                    found[chat["id"]] = {"id": chat["id"], "type": chat.get("type"), "name": name}
+        return list(found.values())
 
     def close(self) -> None:
         self.transport.close()

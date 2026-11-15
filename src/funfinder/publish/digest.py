@@ -20,10 +20,14 @@
    без записи;
 3. иначе — без ссылки.
 
-Текст.
-- Telegram (HTML): название события — ссылка.
-- Простой текст (VK, лог задачи): без ссылок на события, одна ссылка на афишу.
-- Не влезает в лимит площадки — хвост заменяется строкой «…и ещё N на сайте».
+Текст (render, fmt):
+- html — Telegram: название события — ссылка, разделы жирным;
+- vk — VK: разметки нет, разделы ЗАГЛАВНЫМИ. Ссылка-слово в записи VK бывает
+  только на страницы самого VK: [https://vk.com/wall-1_2|Название]. Поэтому
+  название — ссылка, только если это пост VK; страницы сайта — без ссылки;
+- plain — простой текст без ссылок на события (для логов и проверки).
+Во всех форматах внизу — ссылка на афишу города. Не влезает в лимит площадки —
+хвост заменяется строкой «…и ещё N событий на сайте».
 """
 
 import html
@@ -35,7 +39,11 @@ from urllib.parse import urlparse
 from funfinder.site import build, pages
 
 TG_LIMIT = 4000  # Telegram: 4096 символов видимого текста, оставляем запас
-PLAIN_LIMIT = 15000  # VK: около 16 тысяч
+VK_LIMIT = 15000  # VK: 16384 символа текста записи вместе с разметкой ссылок
+PLAIN_LIMIT = VK_LIMIT
+# Полуавтомат: текст для VK приходит сообщением Telegram, а там 4096 символов вместе с шапкой.
+VK_DRAFT_LIMIT = 3600
+FORMATS = ("html", "vk", "plain")
 TITLE_LIMIT = 120
 VENUE_LIMIT = 70
 PRICE_LIMIT = 30  # «Вход 400 р.» — да, абзац про скидки — нет
@@ -158,7 +166,8 @@ def page_slugs(cur, city_id: int, events: list[build.Event], today: date) -> dic
 
 
 # Платформа подборки → адреса постов этой платформы.
-PLATFORM_HOSTS = {"tg": ("t.me",), "vk": ("vk.com", "vk.ru", "m.vk.com")}
+VK_HOSTS = ("vk.com", "vk.ru", "m.vk.com")
+PLATFORM_HOSTS = {"tg": ("t.me",), "vk": VK_HOSTS}
 
 SELECT_POSTS = """
 SELECT event_id, source_url, published_at
@@ -224,25 +233,51 @@ def heading(d: Digest, today: date) -> str:
     return f"Куда сходить в {where}"
 
 
-def _line(item: Item, *, as_html: bool) -> tuple[str, str]:
-    """Строка события: (как отправить, видимый текст). «19:00 Квиз «Кино» — Гастробар «Дача», 500 ₽»."""
+def vk_link(url: str | None) -> str | None:
+    """Адрес для ссылки-слова в записи VK: только страницы VK, приведённые к https://vk.com/…"""
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.netloc.lower().removeprefix("www.") not in VK_HOSTS or not parsed.path.strip("/"):
+        return None
+    return "https://vk.com" + parsed.path + (f"?{parsed.query}" if parsed.query else "")
+
+
+def vk_safe(text: str) -> str:
+    """Квадратные скобки и «|» в тексте VK — это разметка ссылок: [club1|…]. Заменяем на безопасные."""
+    return text.replace("[", "(").replace("]", ")").replace("|", "/")
+
+
+def _line(item: Item, *, fmt: str) -> tuple[str, str]:
+    """Строка события: (что отправить, что считать в лимит). «19:00 Квиз «Кино» — Гастробар «Дача», 500 ₽».
+
+    В Telegram лимит — по видимому тексту (теги не считаются), в VK — по всему
+    тексту записи вместе с разметкой ссылок.
+    """
     at = f"{item.at:%H:%M} " if item.at else ""
     tail = (f" — {item.venue}" if item.venue else "") + (f", {item.price}" if item.price else "")
     plain = f"{at}{item.title}{tail}"
-    if not as_html:
+    if fmt == "plain":
         return plain, plain
+    if fmt == "vk":
+        title, url = vk_safe(item.title), vk_link(item.url)
+        sent = f"{at}{f'[{url}|{title}]' if url else title}{vk_safe(tail)}"
+        return sent, sent
     title = html.escape(item.title)
     if item.url:
         title = f'<a href="{html.escape(item.url, quote=True)}">{title}</a>'
     return f"{html.escape(at)}{title}{html.escape(tail)}", plain
 
 
-def render(d: Digest, *, today: date, as_html: bool, limit: int) -> tuple[str, int]:
-    """Текст подборки и сколько событий в него поместилось. Лимит — по видимому тексту.
+def render(d: Digest, *, today: date, fmt: str, limit: int) -> tuple[str, int]:
+    """Текст подборки в формате fmt (html, vk, plain) и сколько событий в него поместилось.
 
-    Строка — пара (что отправить, что увидит читатель): в HTML теги и ссылки
+    Строка — пара (что отправить, что считать в лимит): в HTML теги и ссылки
     не занимают места в лимите Telegram, считается только видимый текст.
     """
+    if fmt not in FORMATS:
+        raise ValueError(f"неизвестный формат {fmt!r}, допустимы {FORMATS}")
+    as_html = fmt == "html"
     esc = html.escape if as_html else (lambda s: s)
     title, date_line = heading(d, today), build.human_date(d.day, today)
     domain = urlparse(d.city_url).netloc
@@ -260,7 +295,7 @@ def render(d: Digest, *, today: date, as_html: bool, limit: int) -> tuple[str, i
         name = (f"\n<b>{esc(section.name)}</b>", f"\n{section.name}") if as_html else (f"\n{section.name.upper()}",) * 2
         header_pending = True
         for item in section.items:
-            line = _line(item, as_html=as_html)
+            line = _line(item, fmt=fmt)
             cost = len(line[1]) + 1 + (len(name[1]) + 1 if header_pending else 0)
             if used + cost > budget:
                 full = False

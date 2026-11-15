@@ -17,6 +17,11 @@
 Telegram: бот из `TG_BOT_TOKEN`; при `TG_FETCH_VIA_SSH=true` отправка идёт через
 сервер сайта, как и загрузка каналов.
 
+VK: право писать на стену через API VK новым приложениям не выдаёт (2026), поэтому
+по умолчанию — полуавтомат: при `draft_to` в yaml бот присылает готовый текст для VK
+в этот чат Telegram, публикует человек. Без `draft_to` — запись на стене через API с
+ключом VK ID (`python -m funfinder.publish.vk_auth`), если доступ к стене когда-нибудь дадут.
+
 **Параметры ручного запуска:**
 - `issue_date` — на какой день подборка (по умолчанию — на завтра).
 - `force` — опубликовать, даже если подборка на этот день уже вышла. Для тестового канала.
@@ -27,15 +32,16 @@ from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-import paramiko
 import pendulum
 from airflow.sdk import Connection, Param, TriggerRule, Variable, dag, get_current_context, task
 from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
 from funfinder import sources
 from funfinder.db import connect
-from funfinder.publish import run
-from funfinder.publish.telegram import Bot, DirectTransport, SSHTransport, TelegramError
+from funfinder.publish import run, vkid
+from funfinder.publish.errors import SendError
+from funfinder.publish.telegram import Bot, make_transport
+from funfinder.publish.vk import Draft, Wall
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +49,7 @@ CONN_ID = "funfinder_db"
 SECRETS_DIR = Path("/opt/airflow/secrets")  # ./secrets в проекте, только чтение
 
 SELECT_TARGETS = """
-SELECT t.target_id, t.platform, t.handle, t.note, t.settings,
+SELECT t.target_id, t.platform, t.handle, t.note, t.settings, t.draft_chat,
        c.city_id, c.slug, c.name, c.timezone
   FROM meta.publish_targets t
   JOIN meta.cities c USING (city_id)
@@ -59,35 +65,28 @@ def _connect():
 
 def _telegram_transport():
     """Напрямую или через сервер сайта — по TG_FETCH_VIA_SSH, как у ingest_tg."""
-    if Variable.get("tg_fetch_via_ssh", default="false").strip().lower() not in ("1", "true", "yes"):
-        return DirectTransport()
-    host = Variable.get("site_deploy_host", default=None)
-    if not host:
-        raise AirflowFailException("TG_FETCH_VIA_SSH=true, но не задан SITE_DEPLOY_HOST — некуда подключаться")
-    key, known_hosts = SECRETS_DIR / "deploy_key", SECRETS_DIR / "known_hosts"
-    for path in (key, known_hosts):
-        if not path.exists():
-            raise AirflowFailException(f"Нет файла secrets/{path.name} — см. README, «Сайт: сервер»")
-    try:
-        return SSHTransport.connect(
-            host,
-            user=Variable.get("site_deploy_user", default="deploy"),
-            key_path=key,
-            known_hosts_path=known_hosts,
-        )
-    except paramiko.BadHostKeyException as exc:
-        raise AirflowFailException(f"Ключ сервера не совпадает с secrets/known_hosts: {exc}") from exc
-    except paramiko.AuthenticationException as exc:
-        raise AirflowFailException(f"Сервер не принял ключ secrets/deploy_key: {exc}") from exc
+    return make_transport(
+        via_ssh=Variable.get("tg_fetch_via_ssh", default="false").strip().lower() in ("1", "true", "yes"),
+        host=Variable.get("site_deploy_host", default=None),
+        user=Variable.get("site_deploy_user", default="deploy"),
+        secrets_dir=SECRETS_DIR,
+    )
 
 
-def _sender(platform: str):
-    if platform != "tg":
-        raise AirflowFailException(f"Публикация в {platform} пока не подключена")
+def _sender(target: dict):
+    platform = target["platform"]
     try:
-        return Bot(Variable.get("tg_bot_token", default=""), _telegram_transport())
-    except TelegramError as exc:
+        if platform == "tg":
+            return Bot(Variable.get("tg_bot_token", default=""), _telegram_transport())
+        if platform == "vk" and target.get("draft_chat"):
+            # Полуавтомат: текст для VK присылает бот в Telegram, публикует человек.
+            return Draft(Bot(Variable.get("tg_bot_token", default=""), _telegram_transport()), target["draft_chat"])
+        if platform == "vk":
+            # Ключ VK ID берётся из базы при отправке: своё подключение, короткая транзакция.
+            return Wall(vkid.TokenStore(_connect, vkid.secret_box()))
+    except SendError as exc:
         raise AirflowFailException(str(exc)) from exc
+    raise AirflowFailException(f"Публиковать в {platform} не умеем")
 
 
 @dag(
@@ -103,7 +102,7 @@ def _sender(platform: str):
         "retry_delay": timedelta(minutes=2),
         "retry_exponential_backoff": True,
     },
-    tags=["publish", "telegram"],
+    tags=["publish", "telegram", "vk"],
     doc_md=__doc__,
     params={
         "issue_date": Param(
@@ -141,6 +140,7 @@ def publish():
                 "handle",
                 "note",
                 "settings",
+                "draft_chat",
                 "city_id",
                 "city_slug",
                 "city_name",
@@ -160,7 +160,7 @@ def publish():
         if issue.late:
             raise AirflowSkipException(f"Подборка на {issue.issue_date} опоздала: этот день уже наступил")
 
-        sender = _sender(target["platform"])
+        sender = _sender(target)
         try:
             with closing(_connect()) as conn:
                 result = run.publish(

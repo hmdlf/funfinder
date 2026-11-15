@@ -1,6 +1,7 @@
 """load_site_events: показы с сайтов площадок (raw.site_events) → упоминания в staging.events.
 
-Показ с сайта — уже готовое событие, LLM не нужна. Упоминание получает
+Показ с сайта — уже готовое событие, LLM не нужна. Категория — та, что указал
+сам сайт (у ОЦКНТ — тег карточки), иначе категория сайта из yaml. Упоминание получает
 post_id = raw.site_events.id: у сайта нет постов, но пара (source_id, post_id)
 остаётся уникальной, и дальше показ идёт тем же путём, что и посты: проверка,
 площадка (площадка источника из yaml), склейка с анонсами из пабликов.
@@ -18,7 +19,7 @@ REMOVED = "removed"
 
 SELECT_CHANGED = """
 SELECT r.id, r.source_id, src.city_id, r.title, r.event_date, r.event_time, r.url, r.loaded_at,
-       coalesce(src.settings ->> 'category', 'other'),
+       coalesce(r.category, src.settings ->> 'category', 'other'),
        CASE WHEN r.removed_at IS NULL THEN r.content_hash ELSE %(removed)s END AS state
   FROM raw.site_events r
   JOIN meta.sources src USING (source_id)

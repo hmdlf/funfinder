@@ -4,7 +4,9 @@ meta.publish_targets.
 
 Источники — по разделам платформ: vk: (сообщества VK), tg: (публичные
 каналы Telegram) и sites: (сайты площадок с разбором афиши в funfinder/sites/).
-Раздел publish: — куда DAG publish отправляет подборку «Завтра в <городе>».
+Раздел publish: — куда DAG publish отправляет подборку «Завтра в <городе>»:
+каналы Telegram (chat:) и сообщества VK (group:; draft_to: — полуавтомат,
+текст для VK присылает бот в Telegram).
 
 Файл — источник правды: добавили паблик в yaml, на следующем запуске он
 появится в базе. Убрали из yaml — источник станет неактивным (is_active =
@@ -54,10 +56,11 @@ class VenueConfig:
 
 @dataclass(frozen=True)
 class PublishConfig:
-    platform: str  # tg
-    handle: str  # @канал или числовой id чата
+    platform: str  # tg или vk
+    handle: str  # tg: @канал или числовой id чата; vk: id или короткое имя сообщества
     note: str | None = None
     settings: dict = field(default_factory=dict)
+    draft_chat: str | None = None  # vk: куда в Telegram присылать текст для ручной публикации
 
 
 @dataclass(frozen=True)
@@ -84,8 +87,6 @@ PLATFORMS = {
 }
 
 
-# Где публикуем подборки. VK — когда будет токен с доступом к стене (см. README, «Подборка»).
-PUBLISH_PLATFORMS = ("tg",)
 _TG_CHAT_RE = re.compile(r"^(@[A-Za-z][A-Za-z0-9_]{3,31}|-?\d+)$")
 
 
@@ -100,6 +101,25 @@ def normalize_tg_chat(raw: str) -> str:
     if not _TG_CHAT_RE.match(chat):
         raise ValueError(f"не похоже на канал Telegram: {raw!r} (нужно @имя или числовой id)")
     return chat
+
+
+_VK_NUMERIC_RE = re.compile(r"^(?:club|public|event)?(\d+)$")
+
+
+def normalize_vk_group(raw: str) -> str:
+    """Сообщество VK для публикации: 'https://vk.com/club123' → '123', 'vk.com/matingu' → 'matingu'.
+
+    Числовые адреса (club…, public…, -123) приводятся к числу: так их однозначно
+    понимает groups.getById. Короткое имя остаётся именем.
+    """
+    raw = raw.strip()
+    handle = normalize_handle(raw.lstrip("-") if raw.lstrip("-").isdigit() else raw)
+    numeric = _VK_NUMERIC_RE.match(handle)
+    return numeric.group(1) if numeric else handle
+
+
+# Где публикуем подборки: платформа → (ключ адреса в yaml, как привести адрес к одному виду).
+PUBLISH_PLATFORMS = {"tg": ("chat", normalize_tg_chat), "vk": ("group", normalize_vk_group)}
 
 
 def sources_dir() -> Path:
@@ -202,21 +222,28 @@ def _load_publish(path: Path, items: list) -> tuple[PublishConfig, ...]:
     result: list[PublishConfig] = []
     for i, item in enumerate(items):
         where = f"{path.name}: publish[{i}]"
-        if not isinstance(item, dict) or not item.get("platform") or not item.get("chat"):
-            raise SourcesConfigError(f"{where} — нужны platform и chat")
+        if not isinstance(item, dict) or not item.get("platform"):
+            raise SourcesConfigError(f"{where} — нужен platform: tg или vk")
         platform = item["platform"]
         if platform not in PUBLISH_PLATFORMS:
             raise SourcesConfigError(
-                f"{where}: публикация в {platform!r} пока не подключена, можно: {', '.join(PUBLISH_PLATFORMS)}"
+                f"{where}: публиковать в {platform!r} не умеем, можно: {', '.join(PUBLISH_PLATFORMS)}"
             )
+        key, normalize = PUBLISH_PLATFORMS[platform]
+        if not item.get(key):
+            raise SourcesConfigError(f"{where} — для {platform} нужен {key}: куда публиковать")
+        draft = item.get("draft_to")
+        if draft is not None and platform != "vk":
+            raise SourcesConfigError(f"{where}: draft_to — только для vk (текст для ручной публикации в VK)")
         try:
-            handle = normalize_tg_chat(str(item["chat"]))
+            handle = normalize(str(item[key]))
+            draft_chat = normalize_tg_chat(str(draft)) if draft is not None else None
             DigestSettings.from_overrides(item.get("settings"))  # проверяем ключи заранее
         except ValueError as exc:
             raise SourcesConfigError(f"{where}: {exc}") from exc
         if any(t.platform == platform and t.handle == handle for t in result):
             raise SourcesConfigError(f"{path.name}: место публикации {handle} указано дважды")
-        result.append(PublishConfig(platform, handle, item.get("note"), item.get("settings") or {}))
+        result.append(PublishConfig(platform, handle, item.get("note"), item.get("settings") or {}, draft_chat))
     return tuple(result)
 
 
@@ -307,16 +334,17 @@ def sync_city(conn, cfg: CityConfig) -> dict:
         for target in cfg.publish:
             cur.execute(
                 """
-                INSERT INTO meta.publish_targets (city_id, platform, handle, note, settings)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO meta.publish_targets (city_id, platform, handle, note, settings, draft_chat)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (platform, handle) DO UPDATE
                    SET city_id = EXCLUDED.city_id,
                        note = EXCLUDED.note,
                        settings = EXCLUDED.settings,
+                       draft_chat = EXCLUDED.draft_chat,
                        is_active = true,
                        updated_at = now()
                 """,
-                (city_id, target.platform, target.handle, target.note, Json(target.settings)),
+                (city_id, target.platform, target.handle, target.note, Json(target.settings), target.draft_chat),
             )
         cur.execute(
             """

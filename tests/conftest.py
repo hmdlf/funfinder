@@ -7,14 +7,16 @@ docker/postgres-init). Строка подключения — FUNFINDER_TEST_DS
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import psycopg2
 import pytest
 
 from funfinder.db.migrate import migrate
 from funfinder.events import dedupe, extract, validate, venues
+from funfinder.events.dedupe import norm_title
 from funfinder.events.llm import LLMResult
+from funfinder.publish import run
 from funfinder.vk.ingest import IngestSettings, ingest_source
 
 SCHEMAS = ("meta", "raw", "staging", "catalog", "quarantine", "archive")
@@ -42,6 +44,7 @@ def conn(db_dsn):
     conn = psycopg2.connect(db_dsn)
     with conn, conn.cursor() as cur:
         cur.execute("TRUNCATE raw.vk_posts, meta.ingest_log, meta.sources, meta.cities RESTART IDENTITY CASCADE")
+        cur.execute("TRUNCATE meta.oauth_tokens")
         # У архива нет внешних ключей, CASCADE до него не доходит.
         cur.execute(
             "TRUNCATE archive.events, archive.mentions, archive.vk_posts, archive.tg_posts,"
@@ -164,3 +167,49 @@ def pipeline(conn, llm):
     extracted, validated = extract.run(conn, llm, now=NOW), validate.run(conn)
     venues.run(conn)
     return extracted, validated, dedupe.run(conn)
+
+
+# --- Публикация подборки ---
+
+# Витрина показывает только будущее, поэтому в тестах выпуска даты — от настоящего «сегодня».
+REAL_TODAY = date.today()
+REAL_TOMORROW = REAL_TODAY + timedelta(days=1)
+ISSUE = run.Plan(REAL_TOMORROW, REAL_TODAY, late=False)
+
+
+class FakeSender:
+    """Отправитель для run.publish без сети: запоминает, что и куда ушло."""
+
+    def __init__(self, fail: Exception | None = None):
+        self.fail, self.sent, self.keys = fail, [], []
+
+    def send(self, handle, text, *, key=None, link=None):
+        if self.fail:
+            raise self.fail
+        self.sent.append((handle, text))
+        self.keys.append((key, link))
+        return f"m{len(self.sent)}"
+
+
+def add_events(conn, source, rows):
+    """События каталога с упоминанием в посте VK: (название, день, время, категория, статус)."""
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT city_id FROM meta.cities WHERE slug = 'lipetsk'")
+        city_id = cur.fetchone()[0]
+        for title, day, at, category, status in rows:
+            cur.execute(
+                """
+                INSERT INTO catalog.events (city_id, title, title_norm, event_date, event_time, venue, category, status)
+                VALUES (%s, %s, %s, %s, %s, 'Клуб «Атмосфера»', %s, %s) RETURNING event_id
+                """,
+                (city_id, title, norm_title(title), day, at, category, status),
+            )
+            event_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO staging.events (source_id, city_id, post_id, source_url, published_at,
+                                            title, event_date, validated, event_id)
+                VALUES (%s, %s, %s, %s, now(), %s, %s, true, %s)
+                """,
+                (source["source_id"], city_id, event_id, f"https://vk.com/wall-1_{event_id}", title, day, event_id),
+            )

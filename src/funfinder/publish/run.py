@@ -21,11 +21,12 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from funfinder.publish import digest
-from funfinder.publish.telegram import TelegramError
+from funfinder.publish.errors import SendError
 
 log = logging.getLogger(__name__)
 
-LIMITS = {"tg": digest.TG_LIMIT, "vk": digest.PLAIN_LIMIT}
+# Платформа → (формат текста, лимит длины).
+FORMATS = {"tg": ("html", digest.TG_LIMIT), "vk": ("vk", digest.VK_LIMIT)}
 
 
 class PublishError(Exception):
@@ -98,7 +99,9 @@ def publish(
 ) -> dict:
     """target — строка meta.publish_targets с городом (city_id, city_slug, city_name).
 
-    sender — объект с методом send(handle, text) -> id сообщения. Ничего не знает об Airflow.
+    sender — объект с методом send(handle, text, *, key, link) -> id сообщения, ошибки — SendError.
+    key — ключ выпуска для защиты от дублей на стороне площадки (guid в VK), link —
+    адрес афиши города (карточка под записью VK). Ничего не знает об Airflow.
     """
     tid, day = target["target_id"], issue.issue_date
     with conn, conn.cursor() as cur:
@@ -124,11 +127,14 @@ def publish(
         return {"status": "skipped", "issue_date": day.isoformat(), "events": 0}
 
     platform = target["platform"]
-    text, shown = digest.render(d, today=issue.today, as_html=platform == "tg", limit=LIMITS[platform])
+    fmt, limit = FORMATS[platform]
+    if target.get("draft_chat"):
+        limit = digest.VK_DRAFT_LIMIT  # текст для VK уйдёт сообщением Telegram
+    text, shown = digest.render(d, today=issue.today, fmt=fmt, limit=limit)
     _log(conn, tid, day, "sending", events=shown, text=text, **run)
     try:
-        message_id = sender.send(target["handle"], text)
-    except TelegramError as exc:
+        message_id = sender.send(target["handle"], text, key=f"{tid}:{day}:{run_id}", link=d.city_url)
+    except SendError as exc:
         _log(conn, tid, day, "failed", events=shown, error=str(exc), **run)
         raise PublishError(str(exc), retryable=exc.retryable) from exc
     _log(conn, tid, day, "sent", events=shown, message_id=message_id, **run)

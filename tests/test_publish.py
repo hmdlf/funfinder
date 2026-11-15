@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 import requests
 
-from funfinder.events.dedupe import norm_title
+from conftest import ISSUE, REAL_TOMORROW, FakeSender, add_events
 from funfinder.publish import digest, run, telegram
 from funfinder.publish.digest import Digest, DigestSettings, Item, Section
 from funfinder.site import build
@@ -158,7 +158,7 @@ def sample(n_items: int = 2, title: str = "Квиз «Кино»") -> Digest:
 
 
 def test_render_html():
-    text, shown = digest.render(sample(), today=TODAY, as_html=True, limit=digest.TG_LIMIT)
+    text, shown = digest.render(sample(), today=TODAY, fmt="html", limit=digest.TG_LIMIT)
     assert shown == 2
     assert text.splitlines()[:2] == ["<b>Завтра в Липецке</b>", "воскресенье, 15 ноября"]
     assert '19:00 <a href="https://m.com/lipetsk/events/a/">Квиз «Кино»</a> — Гастробар «Дача», 500 ₽' in text
@@ -166,8 +166,8 @@ def test_render_html():
     assert text.endswith('<a href="https://matingu.com/lipetsk/">Вся афиша — matingu.com</a>')
 
 
-def test_render_plain_for_vk():
-    text, _ = digest.render(sample(), today=TODAY, as_html=False, limit=digest.PLAIN_LIMIT)
+def test_render_plain():
+    text, _ = digest.render(sample(), today=TODAY, fmt="plain", limit=digest.PLAIN_LIMIT)
     assert "\nКВИЗЫ\n19:00 Квиз «Кино» — Гастробар «Дача», 500 ₽\n" in text
     assert "<" not in text.replace("<без>", "")
     assert text.endswith("Вся афиша: https://matingu.com/lipetsk/")
@@ -181,7 +181,7 @@ def test_heading_depends_on_the_day(today, title):
 
 def test_long_digest_is_cut_with_a_link_to_the_site():
     big = sample(200)
-    text, shown = digest.render(big, today=TODAY, as_html=True, limit=digest.TG_LIMIT)
+    text, shown = digest.render(big, today=TODAY, fmt="html", limit=digest.TG_LIMIT)
     assert 2 < shown < 200
     rest = 200 - shown
     assert f"…и ещё {rest} {digest.plural(rest, digest.EVENTS)} на сайте" in text
@@ -403,7 +403,8 @@ def test_publish_section_is_loaded_and_synced(conn, tmp_path):
 @pytest.mark.parametrize(
     "section",
     [
-        "publish: [{platform: vk, chat: '123'}]",  # VK пока не подключён
+        "publish: [{platform: vk, chat: '123'}]",  # у VK адрес — group, не chat
+        "publish: [{platform: max, chat: '123'}]",
         "publish: [{platform: tg}]",
         "publish: [{platform: tg, chat: 'not a channel'}]",
         "publish: [{platform: tg, chat: '@chan_a', settings: {foo: 1}}]",
@@ -416,17 +417,6 @@ def test_bad_publish_section(tmp_path, section):
 
 
 # --- Журнал выпусков на базе ---
-
-
-class FakeSender:
-    def __init__(self, fail: telegram.TelegramError | None = None):
-        self.fail, self.sent = fail, []
-
-    def send(self, handle, text):
-        if self.fail:
-            raise self.fail
-        self.sent.append((handle, text))
-        return f"m{len(self.sent)}"
 
 
 @pytest.fixture
@@ -444,36 +434,6 @@ def target(conn, lipetsk):
         "target_id": target_id, "platform": "tg", "handle": "@matingu_test", "settings": {},
         "city_id": city_id, "city_slug": "lipetsk", "city_name": "Липецк", "timezone": "Europe/Moscow",
     }  # fmt: skip
-
-
-def add_events(conn, source, rows):
-    """События каталога с упоминанием: (название, день, время, категория, статус)."""
-    with conn, conn.cursor() as cur:
-        cur.execute("SELECT city_id FROM meta.cities WHERE slug = 'lipetsk'")
-        city_id = cur.fetchone()[0]
-        for title, day, at, category, status in rows:
-            cur.execute(
-                """
-                INSERT INTO catalog.events (city_id, title, title_norm, event_date, event_time, venue, category, status)
-                VALUES (%s, %s, %s, %s, %s, 'Клуб «Атмосфера»', %s, %s) RETURNING event_id
-                """,
-                (city_id, title, norm_title(title), day, at, category, status),
-            )
-            event_id = cur.fetchone()[0]
-            cur.execute(
-                """
-                INSERT INTO staging.events (source_id, city_id, post_id, source_url, published_at,
-                                            title, event_date, validated, event_id)
-                VALUES (%s, %s, %s, %s, now(), %s, %s, true, %s)
-                """,
-                (source["source_id"], city_id, event_id, f"https://vk.com/wall-1_{event_id}", title, day, event_id),
-            )
-
-
-# Витрина показывает только будущее, поэтому здесь даты — от настоящего «сегодня».
-REAL_TODAY = date.today()
-REAL_TOMORROW = REAL_TODAY + timedelta(days=1)
-ISSUE = run.Plan(REAL_TOMORROW, REAL_TODAY, late=False)
 
 
 def publish(conn, target, sender, **kw):
@@ -513,6 +473,8 @@ def test_publish_once_then_skip(conn, lipetsk, target, tmp_path):
     assert f'<a href="https://matingu.com/lipetsk/events/{slug}/">Обыкновенное чудо</a>' in text
     assert "Танго" not in text and "Отменённый" not in text and "Послезавтра" not in text
     assert log_row(conn, target) == ("sent", 2, "m1", None)
+    # Ключ выпуска (guid в VK) — место, день и запуск; ссылка — афиша города.
+    assert sender.keys[0] == (f"{target['target_id']}:{REAL_TOMORROW}:r1", "https://matingu.com/lipetsk/")
 
     # Повторный запуск того же вечера ничего не публикует.
     assert publish(conn, target, sender)["status"] == "already_sent"
